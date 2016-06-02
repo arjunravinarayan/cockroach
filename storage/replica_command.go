@@ -2272,6 +2272,7 @@ func (r *Replica) splitTrigger(
 				}
 				replica.mu.Lock()
 				defer replica.mu.Unlock()
+				replica.ensureRaftGroup()
 				_ = replica.mu.raftGroup.Campaign()
 			})
 		}
