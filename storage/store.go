@@ -2006,6 +2006,7 @@ func (s *Store) handleRaftMessage(req *RaftMessageRequest) error {
 		return nil
 	}
 	r.mu.Lock()
+	r.ensureRaftGroup()
 	err = r.mu.raftGroup.Step(req.Message)
 	r.mu.Unlock()
 	if err != nil {

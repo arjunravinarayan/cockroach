@@ -220,6 +220,7 @@ type Replica struct {
 		raftGroup      *raft.RawNode
 		replicaID      roachpb.ReplicaID
 		truncatedState *roachpb.RaftTruncatedState
+		raftCfG        *raft.Config
 		// Most recent timestamps for keys / key ranges.
 		tsCache *timestampCache
 		// gcThreshold is the GC threshold of the replica. Reads and writes must
@@ -378,13 +379,11 @@ func (r *Replica) setReplicaIDLocked(replicaID roachpb.ReplicaID) error {
 		CheckQuorum:     true,
 		Logger:          &raftLogger{group: uint64(r.RangeID)},
 	}
-	raftGroup, err := raft.NewRawNode(raftCfg, nil)
-	if err != nil {
-		return err
-	}
+
 	previousReplicaID := r.mu.replicaID
 	r.mu.replicaID = replicaID
-	r.mu.raftGroup = raftGroup
+	r.mu.raftCfG = raftCfg
+	r.mu.raftGroup = nil
 
 	// Automatically campaign and elect a leader for this group if there's
 	// exactly one known node for this group.
@@ -403,18 +402,35 @@ func (r *Replica) setReplicaIDLocked(replicaID roachpb.ReplicaID) error {
 	// out and then voting again. This is expected to be an extremely
 	// rare event.
 	if len(r.mu.desc.Replicas) == 1 && r.mu.desc.Replicas[0].ReplicaID == replicaID {
-		if err := raftGroup.Campaign(); err != nil {
+		// todo(arjun): can this code-path be made lazy? right now we just go ahead...
+		if err := r.ensureRaftGroup(); err != nil {
+			return err
+		}
+		if err := r.mu.raftGroup.Campaign(); err != nil {
 			return err
 		}
 	}
 
-	if previousReplicaID != 0 {
+	if previousReplicaID == 0 {
+
+	} else {
 		// propose pending commands under new replicaID
 		if err := r.reproposePendingCmdsLocked(); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func (r *Replica) ensureRaftGroup() error {
+	if r.mu.raftGroup == nil {
+		raftGroup, err := raft.NewRawNode(r.mu.raftCfG, nil)
+		if err != nil {
+			return err
+		}
+		r.mu.raftGroup = raftGroup
+	}
 	return nil
 }
 
@@ -839,6 +855,7 @@ func (r *Replica) setLastVerificationTimestamp(timestamp roachpb.Timestamp) erro
 func (r *Replica) RaftStatus() *raft.Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ensureRaftGroup()
 	return r.mu.raftGroup.Status()
 }
 
@@ -1393,7 +1410,7 @@ func defaultProposeRaftCommandLocked(r *Replica, p *pendingCmd) error {
 			if err != nil {
 				return err
 			}
-
+			r.ensureRaftGroup()
 			return r.mu.raftGroup.ProposeConfChange(
 				raftpb.ConfChange{
 					Type:    changeTypeInternalToRaft[crt.ChangeType],
@@ -1402,6 +1419,7 @@ func defaultProposeRaftCommandLocked(r *Replica, p *pendingCmd) error {
 				})
 		}
 	}
+	r.ensureRaftGroup()
 	return r.mu.raftGroup.Propose(encodeRaftCommand(string(p.idKey), data))
 }
 
@@ -1409,6 +1427,7 @@ func (r *Replica) handleRaftReady() error {
 	// TODO(bram): #4562 There is a lot of locking and unlocking of the replica,
 	// consider refactoring this.
 	r.mu.Lock()
+	r.ensureRaftGroup()
 	if !r.mu.raftGroup.HasReady() {
 		r.mu.Unlock()
 		return nil
@@ -1500,6 +1519,7 @@ func (r *Replica) handleRaftReady() error {
 			}
 			// TODO(bdarnell): update coalesced heartbeat mapping on success.
 			r.mu.Lock()
+			r.ensureRaftGroup()
 			r.mu.raftGroup.ApplyConfChange(cc)
 			r.mu.Unlock()
 		}
@@ -1518,6 +1538,7 @@ func (r *Replica) handleRaftReady() error {
 	// has changed. Or do we need more locking to guarantee that replica
 	// ID cannot change during handleRaftReady?
 	r.mu.Lock()
+	r.ensureRaftGroup()
 	r.mu.raftGroup.Advance(rd)
 	r.mu.Unlock()
 	return nil
@@ -1527,6 +1548,7 @@ func (r *Replica) tick() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.mu.ticks++
+	r.ensureRaftGroup()
 	r.mu.raftGroup.Tick()
 	if r.mu.ticks%r.store.ctx.RaftElectionTimeoutTicks == 0 {
 		// RaftElectionTimeoutTicks is a reasonable approximation of how
@@ -1587,6 +1609,7 @@ func (r *Replica) sendRaftMessage(msg raftpb.Message) {
 				r.store.StoreID(), toReplica.StoreID, err)
 		}
 		r.mu.Lock()
+		r.ensureRaftGroup()
 		r.mu.raftGroup.ReportUnreachable(msg.To)
 		r.mu.Unlock()
 	}
@@ -1598,6 +1621,7 @@ func (r *Replica) reportSnapshotStatus(to uint64, snapErr error) {
 		snapStatus = raft.SnapshotFailure
 	}
 	r.mu.Lock()
+	r.ensureRaftGroup()
 	r.mu.raftGroup.ReportSnapshot(to, snapStatus)
 	r.mu.Unlock()
 }
