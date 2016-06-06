@@ -173,6 +173,57 @@ type replicaChecksum struct {
 	snapshot *roachpb.RaftSnapshotData
 }
 
+type replicaMu struct {
+	// Protects all fields in the mu struct.
+	sync.Mutex
+	// Last index applied to the state machine.
+	appliedIndex uint64
+	// Enforces at most one command is running per key(s).
+	cmdQ *CommandQueue
+	// Range descriptor.
+	//
+	// The lock protects the pointer but the RangeDescriptor struct itself
+	// should be treated as immutable; a reference to it can be returned to
+	// a caller via Replica.Desc() and then used outside of the lock.
+	//
+	// Changes of the descriptor should normally go through one of the
+	// Replica.setDesc* methods.
+	desc *roachpb.RangeDescriptor
+	// Last index persisted to the raft log (not necessarily committed).
+	lastIndex   uint64
+	leaderLease *roachpb.Lease
+	// Max bytes before split.
+	maxBytes    int64
+	pendingCmds map[storagebase.CmdIDKey]*pendingCmd
+	// TODO(arjun): rename this raftGroup.
+	_raftGroup     *raft.RawNode
+	replicaID      roachpb.ReplicaID
+	truncatedState *roachpb.RaftTruncatedState
+	raftCfg        *raft.Config
+	// Most recent timestamps for keys / key ranges.
+	tsCache *timestampCache
+	// gcThreshold is the GC threshold of the replica. Reads and writes must
+	// not happen <= this time.
+	gcThreshold roachpb.Timestamp
+	// Slice of channels to send on after leader lease acquisition.
+	llChans []chan *roachpb.Error
+	// proposeRaftCommandFn can be set to mock out the propose operation.
+	proposeRaftCommandFn func(*pendingCmd) error
+	// Computed checksum at a snapshot UUID.
+	checksums map[uuid.UUID]replicaChecksum
+
+	// Set to an open channel while a snapshot is being generated.
+	// When no snapshot is in progress, this field may either be nil
+	// or a closed channel. If an error occurs during generation,
+	// this channel may be closed without producing a result.
+	snapshotChan chan raftpb.Snapshot
+
+	// Counts calls to Replica.tick()
+	ticks int
+	// Whether the Replica is frozen.
+	frozen bool
+}
+
 // A Replica is a contiguous keyspace with writes managed via an
 // instance of the Raft consensus algorithm. Many ranges may exist
 // in a store and they are unlikely to be contiguous. Ranges are
@@ -195,55 +246,26 @@ type Replica struct {
 	// RWMutex.
 	readOnlyCmdMu sync.RWMutex
 
-	mu struct {
-		// Protects all fields in the mu struct.
-		sync.Mutex
-		// Last index applied to the state machine.
-		appliedIndex uint64
-		// Enforces at most one command is running per key(s).
-		cmdQ *CommandQueue
-		// Range descriptor.
-		//
-		// The lock protects the pointer but the RangeDescriptor struct itself
-		// should be treated as immutable; a reference to it can be returned to
-		// a caller via Replica.Desc() and then used outside of the lock.
-		//
-		// Changes of the descriptor should normally go through one of the
-		// Replica.setDesc* methods.
-		desc *roachpb.RangeDescriptor
-		// Last index persisted to the raft log (not necessarily committed).
-		lastIndex   uint64
-		leaderLease *roachpb.Lease
-		// Max bytes before split.
-		maxBytes       int64
-		pendingCmds    map[storagebase.CmdIDKey]*pendingCmd
-		raftGroup      *raft.RawNode
-		replicaID      roachpb.ReplicaID
-		truncatedState *roachpb.RaftTruncatedState
-		raftCfG        *raft.Config
-		// Most recent timestamps for keys / key ranges.
-		tsCache *timestampCache
-		// gcThreshold is the GC threshold of the replica. Reads and writes must
-		// not happen <= this time.
-		gcThreshold roachpb.Timestamp
-		// Slice of channels to send on after leader lease acquisition.
-		llChans []chan *roachpb.Error
-		// proposeRaftCommandFn can be set to mock out the propose operation.
-		proposeRaftCommandFn func(*pendingCmd) error
-		// Computed checksum at a snapshot UUID.
-		checksums map[uuid.UUID]replicaChecksum
+	mu replicaMu
+}
 
-		// Set to an open channel while a snapshot is being generated.
-		// When no snapshot is in progress, this field may either be nil
-		// or a closed channel. If an error occurs during generation,
-		// this channel may be closed without producing a result.
-		snapshotChan chan raftpb.Snapshot
-
-		// Counts calls to Replica.tick()
-		ticks int
-		// Whether the Replica is frozen.
-		frozen bool
+// RaftGroup returns the RaftGroup owned by this replica. Use this to get the RaftGroup rather than directly accessing _raftGroup to ensure lazy creation of the RaftGroup happens if needed.
+// TODO(arjun): this is wrong, it should just acquire the lock and call RaftGroupLocked.
+/*
+func (r *Replica) RaftGroup() (*raft.RawNode, error) {
+	if err := r.ensureRaftGroup(); err != nil {
+		return nil, err
 	}
+	return r.mu._raftGroup, nil
+}
+*/
+
+// RaftGroupLocked returns the RaftGroup owned by this replica. It assumes that the lock has already been acquired.
+func (r *Replica) RaftGroupLocked() (*raft.RawNode, error) {
+	if err := r.ensureRaftGroupLocked(); err != nil {
+		return nil, err
+	}
+	return r.mu._raftGroup, nil
 }
 
 var _ client.Sender = &Replica{}
@@ -382,8 +404,8 @@ func (r *Replica) setReplicaIDLocked(replicaID roachpb.ReplicaID) error {
 
 	previousReplicaID := r.mu.replicaID
 	r.mu.replicaID = replicaID
-	r.mu.raftCfG = raftCfg
-	r.mu.raftGroup = nil
+	r.mu.raftCfg = raftCfg
+	r.mu._raftGroup = nil
 
 	// Automatically campaign and elect a leader for this group if there's
 	// exactly one known node for this group.
@@ -402,18 +424,22 @@ func (r *Replica) setReplicaIDLocked(replicaID roachpb.ReplicaID) error {
 	// out and then voting again. This is expected to be an extremely
 	// rare event.
 	if len(r.mu.desc.Replicas) == 1 && r.mu.desc.Replicas[0].ReplicaID == replicaID {
-		// todo(arjun): can this code-path be made lazy? right now we just go ahead...
-		if err := r.ensureRaftGroup(); err != nil {
+		// TODO(arjun): Can this code-path be made lazy?
+		raftGroup, err := r.RaftGroupLocked()
+		if err != nil {
 			return err
 		}
-		if err := r.mu.raftGroup.Campaign(); err != nil {
+		if err := raftGroup.Campaign(); err != nil {
 			return err
 		}
+
 	}
 
-	if previousReplicaID == 0 {
-
-	} else {
+	if previousReplicaID != 0 {
+		err := r.ensureRaftGroupLocked()
+		if err != nil {
+			return err
+		}
 		// propose pending commands under new replicaID
 		if err := r.reproposePendingCmdsLocked(); err != nil {
 			return err
@@ -423,16 +449,25 @@ func (r *Replica) setReplicaIDLocked(replicaID roachpb.ReplicaID) error {
 	return nil
 }
 
-func (r *Replica) ensureRaftGroup() error {
-	if r.mu.raftGroup == nil {
-		raftGroup, err := raft.NewRawNode(r.mu.raftCfG, nil)
+func (r *Replica) ensureRaftGroupLocked() error {
+	if r.mu._raftGroup == nil {
+		raftGroup, err := raft.NewRawNode(r.mu.raftCfg, nil)
 		if err != nil {
 			return err
 		}
-		r.mu.raftGroup = raftGroup
+		r.mu._raftGroup = raftGroup
+		r.mu.raftCfg = nil
 	}
 	return nil
 }
+
+/*
+func (r *Replica) ensureRaftGroup() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ensureRaftGroupLocked()
+}
+*/
 
 // context returns a context with information about this range, derived from
 // the supplied context (which is not allowed to be nil). It is only relevant
@@ -855,8 +890,11 @@ func (r *Replica) setLastVerificationTimestamp(timestamp roachpb.Timestamp) erro
 func (r *Replica) RaftStatus() *raft.Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ensureRaftGroup()
-	return r.mu.raftGroup.Status()
+	if r.mu._raftGroup == nil {
+		// TODO(arjun)
+		return nil
+	}
+	return r.mu._raftGroup.Status()
 }
 
 // Send adds a command for execution on this range. The command's
@@ -1410,8 +1448,11 @@ func defaultProposeRaftCommandLocked(r *Replica, p *pendingCmd) error {
 			if err != nil {
 				return err
 			}
-			r.ensureRaftGroup()
-			return r.mu.raftGroup.ProposeConfChange(
+			raftGroup, err := r.RaftGroupLocked()
+			if err != nil {
+				return err
+			}
+			return raftGroup.ProposeConfChange(
 				raftpb.ConfChange{
 					Type:    changeTypeInternalToRaft[crt.ChangeType],
 					NodeID:  uint64(crt.Replica.ReplicaID),
@@ -1419,20 +1460,28 @@ func defaultProposeRaftCommandLocked(r *Replica, p *pendingCmd) error {
 				})
 		}
 	}
-	r.ensureRaftGroup()
-	return r.mu.raftGroup.Propose(encodeRaftCommand(string(p.idKey), data))
+	raftGroup, err := r.RaftGroupLocked()
+	if err != nil {
+		return err
+	}
+	return raftGroup.Propose(encodeRaftCommand(string(p.idKey), data))
 }
 
 func (r *Replica) handleRaftReady() error {
 	// TODO(bram): #4562 There is a lot of locking and unlocking of the replica,
 	// consider refactoring this.
 	r.mu.Lock()
-	r.ensureRaftGroup()
-	if !r.mu.raftGroup.HasReady() {
+
+	raftGroup, err := r.RaftGroupLocked()
+	if err != nil {
+		return err
+	}
+
+	if !raftGroup.HasReady() {
 		r.mu.Unlock()
 		return nil
 	}
-	rd := r.mu.raftGroup.Ready()
+	rd := raftGroup.Ready()
 	lastIndex := r.mu.lastIndex
 	r.mu.Unlock()
 	logRaftReady(r.store.StoreID(), r.RangeID, rd)
@@ -1519,8 +1568,11 @@ func (r *Replica) handleRaftReady() error {
 			}
 			// TODO(bdarnell): update coalesced heartbeat mapping on success.
 			r.mu.Lock()
-			r.ensureRaftGroup()
-			r.mu.raftGroup.ApplyConfChange(cc)
+			raftGroup, err = r.RaftGroupLocked()
+			if err != nil {
+				return err
+			}
+			raftGroup.ApplyConfChange(cc)
 			r.mu.Unlock()
 		}
 
@@ -1538,8 +1590,7 @@ func (r *Replica) handleRaftReady() error {
 	// has changed. Or do we need more locking to guarantee that replica
 	// ID cannot change during handleRaftReady?
 	r.mu.Lock()
-	r.ensureRaftGroup()
-	r.mu.raftGroup.Advance(rd)
+	raftGroup.Advance(rd)
 	r.mu.Unlock()
 	return nil
 }
@@ -1548,8 +1599,11 @@ func (r *Replica) tick() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.mu.ticks++
-	r.ensureRaftGroup()
-	r.mu.raftGroup.Tick()
+	raftGroup, err := r.RaftGroupLocked()
+	if err != nil {
+		return err
+	}
+	raftGroup.Tick()
 	if r.mu.ticks%r.store.ctx.RaftElectionTimeoutTicks == 0 {
 		// RaftElectionTimeoutTicks is a reasonable approximation of how
 		// long we should wait before deciding that our previous proposal
@@ -1609,8 +1663,13 @@ func (r *Replica) sendRaftMessage(msg raftpb.Message) {
 				r.store.StoreID(), toReplica.StoreID, err)
 		}
 		r.mu.Lock()
-		r.ensureRaftGroup()
-		r.mu.raftGroup.ReportUnreachable(msg.To)
+		raftGroup, err := r.RaftGroupLocked()
+		if err != nil {
+			// TODO(arjun): is this acceptable?
+			panic(err)
+		}
+
+		raftGroup.ReportUnreachable(msg.To)
 		r.mu.Unlock()
 	}
 }
@@ -1621,8 +1680,13 @@ func (r *Replica) reportSnapshotStatus(to uint64, snapErr error) {
 		snapStatus = raft.SnapshotFailure
 	}
 	r.mu.Lock()
-	r.ensureRaftGroup()
-	r.mu.raftGroup.ReportSnapshot(to, snapStatus)
+
+	raftGroup, err := r.RaftGroupLocked()
+	if err != nil {
+		// TODO(arjun): what else can we do here?
+		panic(err)
+	}
+	raftGroup.ReportSnapshot(to, snapStatus)
 	r.mu.Unlock()
 }
 
