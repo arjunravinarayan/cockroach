@@ -2897,10 +2897,26 @@ func TestRaftReplayProtectionInTxn(t *testing.T) {
 // TestReplicaLaziness verifies that Raft Groups are brought up lazily.
 func TestReplicaLaziness(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	tc := testContext{}
+	tc := testContext{bootstrapMode: bootstrapRangeOnly}
 	tc.Start(t)
 	defer tc.Stop()
-	//t.Fatalf("My first test case failed!")
+	if status := tc.rng.RaftStatus(); status != nil {
+		t.Fatalf("raft group should not be up; got %v", status)
+	}
+
+	var ba roachpb.BatchRequest
+	key := roachpb.Key("a")
+	put := putArgs(key, []byte("value"))
+	ba.Add(&put)
+	_, pErr := tc.Sender().Send(tc.rng.context(context.Background()), ba)
+	if pErr != nil {
+		t.Fatalf("unexpected error: %s", pErr)
+	}
+
+	if tc.rng.RaftStatus() == nil {
+		t.Fatalf("raft group should be up; got RaftStatus() == nil")
+	}
+
 }
 
 // TestReplayProtection verifies that transactional replays cannot
