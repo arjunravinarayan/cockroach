@@ -2894,6 +2894,15 @@ func TestRaftReplayProtectionInTxn(t *testing.T) {
 	}
 }
 
+// TestReplicaLaziness verifies that Raft Groups are brought up lazily.
+func TestReplicaLaziness(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	tc := testContext{}
+	tc.Start(t)
+	defer tc.Stop()
+	//t.Fatalf("My first test case failed!")
+}
+
 // TestReplayProtection verifies that transactional replays cannot
 // commit intents. The replay consists of an initial BeginTxn/Write
 // batch and ends with an EndTxn batch.

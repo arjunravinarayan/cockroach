@@ -2006,7 +2006,7 @@ func (s *Store) handleRaftMessage(req *RaftMessageRequest) error {
 		return nil
 	}
 	r.mu.Lock()
-	raftGroup, err := r.RaftGroupLocked()
+	raftGroup, err := r.raftGroupLocked()
 	if err != nil {
 		return err
 	}

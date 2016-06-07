@@ -1518,7 +1518,7 @@ func (r *Replica) LeaderLease(
 	}
 	r.mu.leaderLease = &args.Lease
 
-	raftGroup, err := r.RaftGroupLocked()
+	raftGroup, err := r.raftGroupLocked()
 	if err != nil {
 		return reply, err
 	}
@@ -2277,7 +2277,7 @@ func (r *Replica) splitTrigger(
 				}
 				replica.mu.Lock()
 				defer replica.mu.Unlock()
-				raftGroup, err := replica.RaftGroupLocked()
+				raftGroup, err := replica.raftGroupLocked()
 				if err != nil {
 					// TODO(arjun): what is the appropriate behavior here?
 					panic(err)
