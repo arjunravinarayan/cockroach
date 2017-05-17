@@ -150,6 +150,7 @@ func TestParse(t *testing.T) {
 		{`CREATE TABLE IF NOT EXISTS a AS SELECT * FROM b UNION SELECT * FROM c`},
 		{`CREATE TABLE a AS SELECT * FROM b UNION VALUES ('one', 1) ORDER BY c LIMIT 5`},
 		{`CREATE TABLE IF NOT EXISTS a AS SELECT * FROM b UNION VALUES ('one', 1) ORDER BY c LIMIT 5`},
+		{`CREATE TABLE a (b STRING COLLATE "DE")`},
 
 		{`CREATE VIEW a AS SELECT * FROM b`},
 		{`CREATE VIEW a AS SELECT b.* FROM b LIMIT 5`},
@@ -203,6 +204,7 @@ func TestParse(t *testing.T) {
 		{`EXPLAIN (DEBUG) SELECT 1`},
 		{`EXPLAIN (A, B, C) SELECT 1`},
 		{`SELECT * FROM [EXPLAIN SELECT 1]`},
+		{`SELECT * FROM [SHOW TRANSACTION STATUS]`},
 
 		{`HELP count`},
 		{`HELP "varchar"`},
@@ -231,6 +233,8 @@ func TestParse(t *testing.T) {
 		{`SHOW TESTING_RANGES FROM INDEX t@i`},
 		{`SHOW TESTING_RANGES FROM INDEX d.i`},
 		{`SHOW TESTING_RANGES FROM INDEX i`},
+		{`SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t`},
+		{`SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t AS OF SYSTEM TIME 'foo'`},
 
 		// Tables are the default, but can also be specified with
 		// GRANT x ON TABLE y. However, the stringer does not output TABLE.
@@ -347,6 +351,7 @@ func TestParse(t *testing.T) {
 		{`SELECT (ROW())`},
 		{`SELECT (TABLE a)`},
 		{`SELECT 0x1`},
+		{`SELECT 'Deutsch' COLLATE "DE"`},
 
 		{`SELECT 1 FROM t`},
 		{`SELECT 1, 2 FROM t`},
@@ -677,6 +682,9 @@ func TestParse(t *testing.T) {
 		{`BACKUP foo TO 'bar' WITH OPTIONS ('key1', 'key2'='value')`},
 		{`RESTORE foo FROM 'bar' WITH OPTIONS ('key1', 'key2'='value')`},
 		{`SET ROW (1, true, NULL)`},
+
+		// Regression for #15926
+		{`SELECT * FROM ((t1 NATURAL JOIN t2 WITH ORDINALITY AS o1)) WITH ORDINALITY AS o2`},
 	}
 	for _, d := range testData {
 		stmts, err := Parse(d.sql)

@@ -638,7 +638,7 @@ func (u *sqlSymUnion) kvOptions() []KVOption {
 %token <str>   DISTINCT DO DOUBLE DROP
 
 %token <str>   ELSE ENCODING END ESCAPE EXCEPT
-%token <str>   EXISTS EXECUTE EXPLAIN EXTRACT EXTRACT_DURATION
+%token <str>   EXISTS EXECUTE EXPERIMENTAL_FINGERPRINTS EXPLAIN EXTRACT EXTRACT_DURATION
 
 %token <str>   FALSE FAMILY FETCH FILTER FIRST FLOAT FLOORDIV FOLLOWING FOR
 %token <str>   FORCE_INDEX FOREIGN FROM FULL
@@ -979,7 +979,7 @@ opt_validate_behavior:
   }
 
 opt_collate_clause:
-  COLLATE any_name { return unimplementedWithIssue(sqllex, 2473) }
+  COLLATE unrestricted_name { return unimplementedWithIssue(sqllex, 2473) }
 | /* EMPTY */ {}
 
 alter_using:
@@ -1697,6 +1697,11 @@ show_stmt:
     /* SKIP DOC */
     $$.val = &ShowRanges{Index: $5.tableWithIdx()}
   }
+| SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE qualified_name opt_as_of_clause
+  {
+    /* SKIP DOC */
+    $$.val = &ShowFingerprints{Table: $5.newNormalizableTableName(), AsOf: $6.asOfClause()}
+  }
 
 help_stmt:
   HELP unrestricted_name
@@ -1880,9 +1885,9 @@ col_qualification:
   {
     $$.val = NamedColumnQualification{Qualification: $1.colQualElem()}
   }
-| COLLATE any_name
+| COLLATE unrestricted_name
   {
-    $$.val = NamedColumnQualification{Qualification: ColumnCollation($2.unresolvedName().String())}
+    $$.val = NamedColumnQualification{Qualification: ColumnCollation($2)}
   }
 | FAMILY name
   {
@@ -2196,7 +2201,7 @@ index_elem:
 | '(' a_expr ')' opt_collate opt_asc_desc { return unimplemented(sqllex) }
 
 opt_collate:
-  COLLATE any_name { return unimplemented(sqllex) }
+  COLLATE unrestricted_name { return unimplementedWithIssue(sqllex, 2473) }
 | /* EMPTY */ {}
 
 opt_asc_desc:
@@ -3089,10 +3094,12 @@ table_ref:
   }
 | '(' joined_table ')' opt_ordinality alias_clause
   {
-    $$.val = &AliasedTableExpr{Expr: $2.tblExpr(), Ordinality: $4.bool(), As: $5.aliasClause() }
+    $$.val = &AliasedTableExpr{Expr: &ParenTableExpr{$2.tblExpr()}, Ordinality: $4.bool(), As: $5.aliasClause()}
   }
 
-// The following syntax is a CockroachDB extension: SELECT ... FROM [ EXPLAIN .... ] WHERE ...
+// The following syntax is a CockroachDB extension:
+//     SELECT ... FROM [ EXPLAIN .... ] WHERE ...
+//     SELECT ... FROM [ SHOW .... ] WHERE ...
 // EXPLAIN within square brackets can be used as a table expression (data source).
 // We use square brackets for two reasons:
 // - the grammar would be terribly ambiguous if we used simple
@@ -3113,6 +3120,10 @@ table_ref:
 | '[' EXPLAIN '(' explain_option_list ')' explainable_stmt ']' opt_ordinality opt_alias_clause
   {
     $$.val = &AliasedTableExpr{Expr: &Explain{ Options: $4.strs(), Statement: $6.stmt(), Enclosed: true }, Ordinality: $8.bool(), As: $9.aliasClause() }
+  }
+| '[' show_stmt ']' opt_ordinality opt_alias_clause
+  {
+    $$.val = &AliasedTableExpr{Expr: &ShowSource{ Statement: $2.stmt() }, Ordinality: $4.bool(), As: $5.aliasClause() }
   }
 
 opt_tableref_col_list:
@@ -3774,9 +3785,9 @@ a_expr:
   {
     $$.val = &AnnotateTypeExpr{Expr: $1.expr(), Type: $3.colType(), syntaxMode: annotateShort}
   }
-| a_expr COLLATE any_name
+| a_expr COLLATE unrestricted_name
   {
-    $$.val = &CollateExpr{Expr: $1.expr(), Locale: $3.unresolvedName().String()}
+    $$.val = &CollateExpr{Expr: $1.expr(), Locale: $3}
   }
 | a_expr AT TIME ZONE a_expr %prec AT { return unimplemented(sqllex) }
   // These operators must be called out explicitly in order to make use of
@@ -5204,6 +5215,7 @@ unreserved_keyword:
 | DROP
 | ENCODING
 | EXECUTE
+| EXPERIMENTAL_FINGERPRINTS
 | EXPLAIN
 | FILTER
 | FIRST

@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/url"
 	"sort"
+	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	humanize "github.com/dustin/go-humanize"
@@ -87,7 +88,12 @@ func (a *AggregatorSpec) summary() (string, []string) {
 		if agg.Distinct {
 			distinct = "DISTINCT "
 		}
-		str := fmt.Sprintf("%s(%s@%d)", agg.Func, distinct, agg.ColIdx+1)
+		filter := ""
+		if agg.FilterColIdx != nil {
+			filter = fmt.Sprintf(" FILTER @%d", *agg.FilterColIdx+1)
+		}
+
+		str := fmt.Sprintf("%s(%s@%d)%s", agg.Func, distinct, agg.ColIdx+1, filter)
 		details = append(details, str)
 	}
 
@@ -194,10 +200,14 @@ func (post *PostProcessSpec) summary() []string {
 	}
 	if len(post.RenderExprs) > 0 {
 		var buf bytes.Buffer
-		buf.WriteString("Render:")
-		for _, expr := range post.RenderExprs {
-			buf.WriteByte(' ')
-			buf.WriteString(expr.Expr)
+		buf.WriteString("Render: ")
+		for i, expr := range post.RenderExprs {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			// Remove any spaces in the expression (makes things more compact
+			// and it's easier to visually separate expressions).
+			buf.WriteString(strings.Replace(expr.Expr, " ", "", -1))
 		}
 		res = append(res, buf.String())
 	}
@@ -227,6 +237,7 @@ type diagramProcessor struct {
 	Inputs  []diagramCell `json:"inputs"`
 	Core    diagramCell   `json:"core"`
 	Outputs []diagramCell `json:"outputs"`
+	StageID int32         `json:"stage"`
 }
 
 type diagramEdge struct {
@@ -302,6 +313,7 @@ func generateDiagramData(flows []FlowSpec, nodeNames []string) (diagramData, err
 			} else {
 				proc.Outputs = []diagramCell{}
 			}
+			proc.StageID = p.StageID
 			d.Processors = append(d.Processors, proc)
 			pIdx++
 		}

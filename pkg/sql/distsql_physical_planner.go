@@ -284,9 +284,6 @@ func (dsp *distSQLPlanner) checkSupportForNode(node planNode) (distRecommendatio
 
 	case *groupNode:
 		for _, fholder := range n.funcs {
-			if fholder.hasFilter {
-				return 0, errors.Errorf("aggregation with FILTER not supported yet")
-			}
 			if f, ok := fholder.expr.(*parser.FuncExpr); ok {
 				if strings.ToUpper(f.Func.FunctionReference.String()) == "ARRAY_AGG" {
 					return 0, errors.Errorf("ARRAY_AGG aggregation not supported yet")
@@ -598,6 +595,7 @@ func (dsp *distSQLPlanner) createTableReaders(
 	}
 
 	var p physicalPlan
+	stageID := p.NewStageID()
 
 	for _, sp := range spanPartitions {
 		tr := &distsqlrun.TableReaderSpec{}
@@ -610,8 +608,9 @@ func (dsp *distSQLPlanner) createTableReaders(
 		proc := distsqlplan.Processor{
 			Node: sp.node,
 			Spec: distsqlrun.ProcessorSpec{
-				Core:   distsqlrun.ProcessorCoreUnion{TableReader: tr},
-				Output: []distsqlrun.OutputRouterSpec{{Type: distsqlrun.OutputRouterSpec_PASS_THROUGH}},
+				Core:    distsqlrun.ProcessorCoreUnion{TableReader: tr},
+				Output:  []distsqlrun.OutputRouterSpec{{Type: distsqlrun.OutputRouterSpec_PASS_THROUGH}},
+				StageID: stageID,
 			},
 		}
 
@@ -820,6 +819,10 @@ func (dsp *distSQLPlanner) addAggregators(
 			aggregations[i].Distinct = (f.Type == parser.DistinctFuncType)
 		}
 		aggregations[i].ColIdx = uint32(p.planToStreamColMap[fholder.argRenderIdx])
+		if fholder.hasFilter {
+			col := uint32(p.planToStreamColMap[fholder.filterRenderIdx])
+			aggregations[i].FilterColIdx = &col
+		}
 	}
 
 	inputTypes := p.ResultTypes
@@ -952,8 +955,9 @@ func (dsp *distSQLPlanner) addAggregators(
 			info := distsqlplan.DistAggregationTable[e.Func]
 			for i, localFunc := range info.LocalStage {
 				localAgg[aIdx] = distsqlrun.AggregatorSpec_Aggregation{
-					Func:   localFunc,
-					ColIdx: e.ColIdx,
+					Func:         localFunc,
+					ColIdx:       e.ColIdx,
+					FilterColIdx: e.FilterColIdx,
 				}
 
 				_, localResultType, err := distsqlrun.GetAggregateInfo(localFunc, inputTypes[e.ColIdx])
@@ -1081,6 +1085,8 @@ func (dsp *distSQLPlanner) addAggregators(
 			}
 		}
 
+		stageID := p.NewStageID()
+
 		// We have one final stage processor for each result router. This is a
 		// somewhat arbitrary decision; we could have a different number of nodes
 		// working on the final stage.
@@ -1098,6 +1104,7 @@ func (dsp *distSQLPlanner) addAggregators(
 					Output: []distsqlrun.OutputRouterSpec{{
 						Type: distsqlrun.OutputRouterSpec_PASS_THROUGH,
 					}},
+					StageID: stageID,
 				},
 			}
 			p.AddProcessor(proc)
@@ -1118,8 +1125,8 @@ func (dsp *distSQLPlanner) addAggregators(
 	}
 
 	// Update p.planToStreamColMap; we will have a simple 1-to-1 mapping of
-	// planNode columns to stream columns because the aggregator (and possibly
-	// evaluator) have been programmed to produce the columns in order.
+	// planNode columns to stream columns because the aggregator
+	// has been programmed to produce the same columns as the groupNode.
 	p.planToStreamColMap = identityMap(p.planToStreamColMap, len(aggregations))
 	return nil
 }
@@ -1374,6 +1381,7 @@ func (dsp *distSQLPlanner) createPlanForJoin(
 	}
 
 	pIdxStart := distsqlplan.ProcessorIdx(len(p.Processors))
+	stageID := p.NewStageID()
 
 	if len(nodes) == 1 {
 		proc := distsqlplan.Processor{
@@ -1383,9 +1391,10 @@ func (dsp *distSQLPlanner) createPlanForJoin(
 					{ColumnTypes: leftTypes},
 					{ColumnTypes: rightTypes},
 				},
-				Core:   distsqlrun.ProcessorCoreUnion{HashJoiner: &joinerSpec},
-				Post:   post,
-				Output: []distsqlrun.OutputRouterSpec{{Type: distsqlrun.OutputRouterSpec_PASS_THROUGH}},
+				Core:    distsqlrun.ProcessorCoreUnion{HashJoiner: &joinerSpec},
+				Post:    post,
+				Output:  []distsqlrun.OutputRouterSpec{{Type: distsqlrun.OutputRouterSpec_PASS_THROUGH}},
+				StageID: stageID,
 			},
 		}
 		p.Processors = append(p.Processors, proc)
@@ -1402,9 +1411,10 @@ func (dsp *distSQLPlanner) createPlanForJoin(
 						{ColumnTypes: leftTypes},
 						{ColumnTypes: rightTypes},
 					},
-					Core:   distsqlrun.ProcessorCoreUnion{HashJoiner: &joinerSpec},
-					Post:   post,
-					Output: []distsqlrun.OutputRouterSpec{{Type: distsqlrun.OutputRouterSpec_PASS_THROUGH}},
+					Core:    distsqlrun.ProcessorCoreUnion{HashJoiner: &joinerSpec},
+					Post:    post,
+					Output:  []distsqlrun.OutputRouterSpec{{Type: distsqlrun.OutputRouterSpec_PASS_THROUGH}},
+					StageID: stageID,
 				},
 			}
 			p.Processors = append(p.Processors, proc)

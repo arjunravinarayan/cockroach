@@ -364,7 +364,7 @@ func (p *planner) ShowCreateTable(
 		return nil, err
 	}
 
-	desc, err := mustGetTableDesc(ctx, p.txn, p.getVirtualTabler(), tn)
+	desc, err := mustGetTableDesc(ctx, p.txn, p.getVirtualTabler(), tn, true /*allowAdding*/)
 	if err != nil {
 		return nil, err
 	}
@@ -715,6 +715,9 @@ func (p *planner) ShowGrants(ctx context.Context, n *parser.ShowGrants) (planNod
 
 					}
 				}
+				if len(paramHolders) == 0 {
+					return v, nil
+				}
 				tableGrants := fmt.Sprintf(`SELECT TABLE_NAME, GRANTEE, PRIVILEGE_TYPE FROM information_schema.table_privileges
 									WHERE (TABLE_SCHEMA, TABLE_NAME) IN (%s)`, strings.Join(paramHolders, ","))
 				if n.Grantees != nil {
@@ -816,7 +819,7 @@ func (p *planner) ShowConstraints(
 		return nil, err
 	}
 
-	desc, err := mustGetTableDesc(ctx, p.txn, p.getVirtualTabler(), tn)
+	desc, err := mustGetTableDesc(ctx, p.txn, p.getVirtualTabler(), tn, true /*allowAdding*/)
 	if err != nil {
 		return nil, err
 	}
@@ -913,6 +916,13 @@ func (p *planner) ShowTables(ctx context.Context, n *parser.ShowTables) (planNod
 			return queryInfoSchema(ctx, p, columns, name, getTablesQuery, name)
 		},
 	}, nil
+}
+
+// ShowTransactionStatus implements the plan for SHOW TRANSACTION STATUS.
+// This statement is usually handled as a special case in Executor,
+// but for FROM [SHOW TRANSACTION STATUS] we will arrive here too.
+func (p *planner) ShowTransactionStatus() (planNode, error) {
+	return p.Show(&parser.Show{Name: "transaction status"})
 }
 
 // ShowUsers returns all the users.

@@ -328,7 +328,7 @@ func (p *planner) getDataSource(
 		return p.getGeneratorPlan(ctx, t)
 
 	case *parser.Subquery:
-		return p.getSubqueryPlan(ctx, t.Select, nil)
+		return p.getSubqueryPlan(ctx, anonymousTable, t.Select, nil)
 
 	case *parser.JoinTableExpr:
 		// Joins: two sources.
@@ -341,6 +341,16 @@ func (p *planner) getDataSource(
 			return right, err
 		}
 		return p.makeJoin(ctx, t.Join, left, right, t.Cond)
+
+	case *parser.ShowSource:
+		plan, err := p.newPlan(ctx, t.Statement, nil)
+		if err != nil {
+			return planDataSource{}, err
+		}
+		return planDataSource{
+			info: newSourceInfoForSingleTable(anonymousTable, plan.Columns()),
+			plan: plan,
+		}, nil
 
 	case *parser.Explain:
 		plan, err := p.Explain(ctx, t)
@@ -482,16 +492,18 @@ func (p *planner) getTableScanOrViewPlan(
 	hints *parser.IndexHints,
 	scanVisibility scanVisibility,
 ) (planDataSource, error) {
-	descFunc := p.session.leases.getTableLease
+	var desc *sqlbase.TableDescriptor
+	var err error
 	if p.avoidCachedDescriptors {
 		// AS OF SYSTEM TIME queries need to fetch the table descriptor at the
 		// specified time, and never lease anything. The proto transaction already
 		// has its timestamps set correctly so getTableOrViewDesc will fetch with
 		// the correct timestamp.
-		descFunc = mustGetTableOrViewDesc
+		desc, err = mustGetTableOrViewDesc(
+			ctx, p.txn, p.getVirtualTabler(), tn, false /*allowAdding*/)
+	} else {
+		desc, err = p.session.leases.getTableLease(ctx, p.txn, p.getVirtualTabler(), tn)
 	}
-
-	desc, err := descFunc(ctx, p.txn, p.getVirtualTabler(), tn)
 	if err != nil {
 		return planDataSource{}, err
 	}
@@ -561,7 +573,7 @@ func (p *planner) getViewPlan(
 	// TODO(a-robinson): Support ORDER BY and LIMIT in views. Is it as simple as
 	// just passing the entire select here or will inserting an ORDER BY in the
 	// middle of a query plan break things?
-	plan, err := p.getSubqueryPlan(ctx, sel.Select, sqlbase.ResultColumnsFromColDescs(desc.Columns))
+	plan, err := p.getSubqueryPlan(ctx, *tn, sel.Select, sqlbase.ResultColumnsFromColDescs(desc.Columns))
 	if err != nil {
 		return plan, err
 	}
@@ -572,7 +584,7 @@ func (p *planner) getViewPlan(
 // getSubqueryPlan builds a planDataSource for a select statement, including
 // for simple VALUES statements.
 func (p *planner) getSubqueryPlan(
-	ctx context.Context, sel parser.SelectStatement, cols sqlbase.ResultColumns,
+	ctx context.Context, tn parser.TableName, sel parser.SelectStatement, cols sqlbase.ResultColumns,
 ) (planDataSource, error) {
 	plan, err := p.newPlan(ctx, sel, nil)
 	if err != nil {
@@ -582,7 +594,7 @@ func (p *planner) getSubqueryPlan(
 		cols = plan.Columns()
 	}
 	return planDataSource{
-		info: newSourceInfoForSingleTable(anonymousTable, cols),
+		info: newSourceInfoForSingleTable(tn, cols),
 		plan: plan,
 	}, nil
 }

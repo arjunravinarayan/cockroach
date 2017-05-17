@@ -187,3 +187,31 @@ func (node *ShowRanges) Format(buf *bytes.Buffer, f FmtFlags) {
 		FormatNode(buf, f, node.Table)
 	}
 }
+
+// ShowSource encapsulates one of the other SHOW statements as a data source.
+type ShowSource struct {
+	Statement Statement
+}
+
+// Format implements the NodeFormatter interface.
+func (node *ShowSource) Format(buf *bytes.Buffer, f FmtFlags) {
+	buf.WriteByte('[')
+	node.Statement.Format(buf, f)
+	buf.WriteByte(']')
+}
+
+// ShowFingerprints represents a SHOW EXPERIMENTAL_FINGERPRINTS statement.
+type ShowFingerprints struct {
+	Table *NormalizableTableName
+	AsOf  AsOfClause
+}
+
+// Format implements the NodeFormatter interface.
+func (node *ShowFingerprints) Format(buf *bytes.Buffer, f FmtFlags) {
+	buf.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE ")
+	FormatNode(buf, f, node.Table)
+	if node.AsOf.Expr != nil {
+		buf.WriteString(" ")
+		FormatNode(buf, f, node.AsOf)
+	}
+}

@@ -221,6 +221,10 @@ func (*FuncExpr) tableExpr()         {}
 
 func (*Explain) tableExpr() {}
 
+// Ditto for ShowSource, used for [SHOW ...]
+
+func (*ShowSource) tableExpr() {}
+
 // IndexID is a custom type for IndexDescriptor IDs.
 type IndexID uint32
 
@@ -270,14 +274,7 @@ type AliasedTableExpr struct {
 
 // Format implements the NodeFormatter interface.
 func (node *AliasedTableExpr) Format(buf *bytes.Buffer, f FmtFlags) {
-	_, exprIsJoin := node.Expr.(*JoinTableExpr)
-	if exprIsJoin {
-		buf.WriteByte('(')
-	}
 	FormatNode(buf, f, node.Expr)
-	if exprIsJoin {
-		buf.WriteByte(')')
-	}
 	if node.Hints != nil {
 		FormatNode(buf, f, node.Hints)
 	}
