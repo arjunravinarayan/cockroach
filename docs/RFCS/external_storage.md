@@ -81,6 +81,28 @@ structures used:
 Importantly, we see two major data structures used: some sort of
 sorted structure,
 
+## Sorter
+The idea would be to consume as many rows as we can into memory before
+overflowing to disk. Our use of RocksDB will ensure that these on-disk rows
+are sorted as expected (by providing a comparator).
+
+Once all rows have been consumed we will perform a sort of the rows in-memory
+followed by merging these in-memory rows with the on-disk rows, emitting a row
+at each step.
+
+### Optimizations
+#### Sorting with a limit
+Our current implementation for sorting with a limit, k, is to use a max heap of
+k elements. A way to combine on-disk storage with this optimization is to add
+as many elements up to k as memory can hold before neglecting the max heap and
+storing the remaining rows in RocksDB. We can once again perform a merge step
+up to k times.
+
+#### Merging in memory rows with on disk rows
+In both cases we need to merge memory rows with on disk rows to emit a certain
+number of rows in sorted order. It can be the case that at some point enough
+memory is available that a batch read from RocksDB can be performed to improve
+the total query latency.
 
 # Options
 
