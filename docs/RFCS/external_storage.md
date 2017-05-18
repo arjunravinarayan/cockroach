@@ -80,6 +80,50 @@ structures used:
 
 
 
+## Sorter
+The idea would be to consume as many rows as we can into memory before
+overflowing to disk. Our use of RocksDB will ensure that these on-disk rows
+are sorted as expected (by providing a comparator).
+
+Once all rows have been consumed we will perform a sort of the rows in-memory
+followed by merging these in-memory rows with the on-disk rows, emitting a row
+at each step.
+
+### Optimizations
+#### Sorting with a limit
+Our current implementation for sorting with a limit, k, is to use a max heap of
+k elements. A way to combine on-disk storage with this optimization is to add
+as many elements up to k as memory can hold before neglecting the max heap and
+storing the remaining rows in RocksDB. We can once again perform a merge step
+up to k times.
+
+#### Merging in memory rows with on disk rows
+In both cases we need to merge memory rows with on disk rows to emit a certain
+number of rows in sorted order. It can be the case that at some point enough
+memory is available that a batch read from RocksDB can be performed to improve
+the total query latency.
+
+## HashJoiner
+The HashJoiner will have a hash table in memory that will overflow to disk.
+RocksDB will be used as an on-disk map. Once the probe phase is finished, the
+HashJoiner will emit all rows from memory and read the on-disk data in batches.
+
+### Possible Optimizations
+#### Planning subsequent joins as merge joins
+Using RocksDB to store on-disk data will result in this on-disk data sorted by
+the join key. The in-memory data could also be sorted so that if any joins are
+performed after this HashJoin with the emitted data subsequent joins could be
+planned as merge joins.
+
+### Alternatives
+#### GRACE Hash Join
+A hash table is built in memory with all other data overflowed to disk. The
+input stream is gone through completely and any matches emitted. Once the input
+stream is completely processed, the next batch of data is loaded into memory and
+the process is repeated until there is no data left. This would require a new
+processor that allows multiple reads of the same input stream. The upside is
+that the storage solution can be extremely simple since the on-disk data does
+not need to be sorted and the only reads that happen are sequential.
 
 # Options
 
@@ -89,12 +133,6 @@ structures used:
 
 2. Use our own temporary flat files.
 2b. What format to use? sorted, unsorted, up to the processor?
-
-
-
-GRACE hash join - implement by adding a new processor that allows for
-multiple reads of the same input stream, which stores the stream to
-disk.
 
 # Concerns
 
