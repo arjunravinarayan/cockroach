@@ -97,16 +97,10 @@ as many elements up to k as memory can hold before neglecting the max heap and
 storing the remaining rows in RocksDB. We can once again perform a merge step
 up to k times.
 
-#### Merging in memory rows with on disk rows
-In both cases we need to merge memory rows with on disk rows to emit a certain
-number of rows in sorted order. It can be the case that at some point enough
-memory is available that a batch read from RocksDB can be performed to improve
-the total query latency.
-
 ## HashJoiner
 The HashJoiner will have a hash table in memory that will overflow to disk.
 RocksDB will be used as an on-disk map. Once the probe phase is finished, the
-HashJoiner will emit all rows from memory and read the on-disk data in batches.
+HashJoiner will emit rows from memory and disk.
 
 ### Possible Optimizations
 #### Planning subsequent joins as merge joins
