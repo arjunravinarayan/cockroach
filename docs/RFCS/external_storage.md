@@ -71,12 +71,12 @@ structures used:
 | TableReader     | No                          | -         |
 | JoinReader      | No                          | -         |
 | Sorter          | Yes                         |Sorted tree|
-| Aggregator      | Yes                         | TODO: read the code to figure it out |
-| Distinct        | Yes                         | Hashtable |
+| Aggregator      | Yes                         |    Map    |
+| Distinct        | Yes                         |    Map    |
 | MergeJoiner     | No                          | --        |
-| HashJoiner      | Yes                         | Hashtable |
+| HashJoiner      | Yes                         |    Map    |
 | Values          | No                          | --        |
-| AlgebraicSetOp  | Yes                         | Hashtable |
+| AlgebraicSetOp  | Yes                         |    Map    |
 
 
 
@@ -118,6 +118,20 @@ the process is repeated until there is no data left. This would require a new
 processor that allows multiple reads of the same input stream. The upside is
 that the storage solution can be extremely simple since the on-disk data does
 not need to be sorted and the only reads that happen are sequential.
+
+## Aggregator
+The Aggregator will follow the same design as the HashJoiner with groups as
+buckets and aggregations as values. Note that some aggregations do accumulate
+Datums and any aggregation that grows too large will be overflowed to disk. The
+specific aggregations that do this are:
+- arrayAggregate appends datums for each group to a corresponding array.
+- concatAggregate concatenates bytes or strings and keeps track of the result.
+
+### Possible Optimizations
+Keeping the largest number of buckets in memory decreases the probability of
+going to disk to modify a bucket (unless we have prior knowledge of "hot"
+groups). Therefore, buckets with an associated aggregator whose memory usage
+grows as data are aggregated should be overflowed to disk first.
 
 # Options
 
