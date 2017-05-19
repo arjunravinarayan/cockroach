@@ -133,6 +133,21 @@ going to disk to modify a bucket (unless we have prior knowledge of "hot"
 groups). Therefore, buckets with an associated aggregator whose memory usage
 grows as data are aggregated should be overflowed to disk first.
 
+## Distinct
+The set of seen distinct values (hash table) will be overflowed to disk.
+
+## AlgebraicSetOp
+`EXCEPT ALL` is the only set operation that needs a processor to execute the
+logic; all other supported set operations are planned for. This design therefore
+describes only the `EXCEPT ALL` set operation.
+
+The goal is to output all rows in the left source that do not have a match in
+the right source. The current implementation is to fully consume both the left
+and the right source and look at each "group" (a "group" is defined as a set of
+rows that have the same ordering column).
+
+
+
 # Options
 
 1. Use RocksDB
