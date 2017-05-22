@@ -142,11 +142,14 @@ logic; all other supported set operations are planned for. This design therefore
 describes only the `EXCEPT ALL` set operation.
 
 The goal is to output all rows in the left source that do not have a match in
-the right source. The current implementation is to fully consume both the left
-and the right source and look at each "group" (a "group" is defined as a set of
-rows that have the same ordering column).
+the right source. The worst-case current implementation is to fully consume both
+the left and the right source and for each left row check existence in a hash
+map (if inputs are ordered, rows are consumed in groups that are equal given the
+ordering columns).
 
-
+Keeping the right input in memory will preserve O(1) lookup as much as possible.
+The approach will be the same as the HashJoiner: build a hash table in memory
+and overflow to disk.
 
 # Options
 
