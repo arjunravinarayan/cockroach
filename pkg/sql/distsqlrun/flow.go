@@ -114,7 +114,7 @@ type Flow struct {
 
 	doneFn func()
 
-	localStorage      *engine.RocksDB
+	localStorage      engine.Engine
 	processorRegistry *uint64
 
 	status flowStatus
@@ -125,7 +125,7 @@ func newFlow(
 	flowReg *flowRegistry,
 	syncFlowConsumer RowReceiver,
 	processorRegistry *uint64,
-	localStorage *engine.RocksDB,
+	localStorage engine.Engine,
 ) *Flow {
 	f := &Flow{
 		FlowCtx:           flowCtx,

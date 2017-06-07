@@ -57,6 +57,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/mon"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/ui"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -118,6 +119,45 @@ type Server struct {
 	engines            Engines
 	internalMemMetrics sql.MemoryMetrics
 	adminMemMetrics    sql.MemoryMetrics
+}
+
+func NewLocalStorage(ctx context.Context, storeCfg base.StoreSpec) engine.Engine {
+	// TODO(arjun): set sane defaults
+	rocksDBCache := engine.NewRocksDBCache(0)
+
+	if !storeCfg.InMemory {
+		if err := os.RemoveAll(storeCfg.Path); err != nil {
+			log.Warningf(ctx, "could not clear RocksDB location for DistSQL execution, performance on large query execution may be impacted: %v", err.Error())
+		}
+		if err := os.Mkdir(storeCfg.Path, 0700); err != nil {
+			log.Warningf(ctx, "could not create directory for RocksDB for DistSQL execution, performance on large query execution may be impacted: %v", err.Error())
+		}
+	}
+
+
+	rocksDBCfg := engine.RocksDBConfig{
+		Attrs:            roachpb.Attributes{},
+		DiskLocation:     storeCfg.Path,
+		MaxSize:          0,
+		MaxOpenFiles:     engine.DefaultMaxOpenFiles,
+		WarnLargeBatches: false,
+		CompactionStyle:  engine.TODO{},
+		WALTTLInSeconds:  -1,
+		UseDirectWrites:  false,
+		BlockSize:        -1,
+	}
+	rocksDB, err := engine.NewRocksDB(rocksDBCfg, rocksDBCache)
+	if err != nil {
+		log.Warningf(ctx, "could not instantiate RocksDB instance for DistSQL execution, queries larger than memory will abort: %v", err.Error())
+	}
+
+	return rocksDB
+}
+
+// CleanupLocalStorage gracefully shuts down the RocksDB engine, and deletes the data.
+func CleanupLocalStorage(RocksDBPath string, eng engine.Engine) error {
+	eng.Close()
+	return os.RemoveAll(RocksDBPath)
 }
 
 // NewServer creates a Server from a server.Context.
@@ -271,17 +311,16 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	s.registry.AddMetric(distSQLMetrics.CurBytesCount)
 	s.registry.AddMetric(distSQLMetrics.MaxBytesHist)
 
-	// Set up the DistSQL server.
-	distSQLEngineLocation := envutil.EnvOrDefaultString("COCKROACH_LOCAL_QUERY_STORAGE", fmt.Sprintf("%s/DISTSQL_TMP", s.cfg.Stores.Specs[0].Path))
+	localEngine := NewLocalStorage(ctx, s.cfg.DistSQLLocalStore)
+
 	distSQLCfg := distsqlrun.ServerConfig{
 		AmbientContext: s.cfg.AmbientCtx,
 		DB:             s.db,
 		// DistSQL also uses a DB that bypasses the TxnCoordSender.
-		FlowDB:      client.NewDB(s.distSender, s.clock),
-		RPCContext:  s.rpcContext,
-		Stopper:     s.stopper,
-		NodeID:      &s.nodeIDContainer,
-		RocksDBPath: distSQLEngineLocation,
+		FlowDB:     client.NewDB(s.distSender, s.clock),
+		RPCContext: s.rpcContext,
+		Stopper:    s.stopper,
+		NodeID:     &s.nodeIDContainer,
 
 		ParentMemoryMonitor: &rootSQLMemoryMonitor,
 		Counter:             distSQLMetrics.CurBytesCount,
@@ -290,7 +329,8 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	if s.cfg.TestingKnobs.DistSQL != nil {
 		distSQLCfg.TestingKnobs = *s.cfg.TestingKnobs.DistSQL.(*distsqlrun.TestingKnobs)
 	}
-	s.distSQLServer = distsqlrun.NewServer(ctx, distSQLCfg)
+
+	s.distSQLServer = distsqlrun.NewServer(ctx, distSQLCfg, localEngine)
 	distsqlrun.RegisterDistSQLServer(s.grpc, s.distSQLServer)
 
 	// Set up admin memory metrics for use by admin SQL executors.

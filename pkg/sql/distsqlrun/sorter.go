@@ -48,7 +48,7 @@ type sorter struct {
 	// needing to first run out of memory.
 	testingKnobForceDisk bool
 
-	localStorage       *engine.RocksDB
+	localStorage       engine.Engine
 	localStoragePrefix uint64
 }
 
@@ -60,7 +60,7 @@ func newSorter(
 	input RowSource,
 	post *PostProcessSpec,
 	output RowReceiver,
-	localStorage *engine.RocksDB,
+	localStorage engine.Engine,
 	localStoragePrefix uint64,
 ) (*sorter, error) {
 	count := int64(0)
