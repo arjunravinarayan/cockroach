@@ -22,6 +22,7 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
@@ -71,7 +72,7 @@ func newSorter(
 }
 
 // Run is part of the processor interface.
-func (s *sorter) Run(ctx context.Context, wg *sync.WaitGroup) {
+func (s *sorter) Run(ctx context.Context, wg *sync.WaitGroup, localStorage *engine.RocksDB, localStoragePrefix uint64) {
 	if wg != nil {
 		defer wg.Done()
 	}
@@ -113,7 +114,7 @@ func (s *sorter) Run(ctx context.Context, wg *sync.WaitGroup) {
 		ss = newSortChunksStrategy(sv)
 	}
 
-	sortErr := ss.Execute(ctx, s)
+	sortErr := ss.Execute(ctx, s, localStorage, localStoragePrefix)
 	if sortErr != nil {
 		log.Errorf(ctx, "error sorting rows: %s", sortErr)
 	}

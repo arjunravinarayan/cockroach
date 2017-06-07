@@ -75,7 +75,7 @@ func TestValues(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					v.Run(context.Background(), nil)
+					v.Run(context.Background(), nil, nil, 0)
 					if !out.ProducerClosed {
 						t.Fatalf("output RowReceiver not closed")
 					}

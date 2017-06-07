@@ -24,6 +24,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
@@ -187,7 +188,7 @@ func (jr *joinReader) mainLoop(ctx context.Context) error {
 }
 
 // Run is part of the processor interface.
-func (jr *joinReader) Run(ctx context.Context, wg *sync.WaitGroup) {
+func (jr *joinReader) Run(ctx context.Context, wg *sync.WaitGroup, localStorage *engine.RocksDB, localStoragePrefix uint64) {
 	if wg != nil {
 		defer wg.Done()
 	}

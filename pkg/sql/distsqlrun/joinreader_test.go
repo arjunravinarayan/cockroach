@@ -126,7 +126,7 @@ func TestJoinReader(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			jr.Run(context.Background(), nil)
+			jr.Run(context.Background(), nil, nil, 0)
 
 			if !in.Done {
 				t.Fatal("joinReader didn't consume all the rows")
@@ -203,7 +203,7 @@ func TestJoinReaderDrain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		jr.Run(ctx, nil)
+		jr.Run(ctx, nil, nil, 0)
 	})
 
 	// ConsumerDone verifies that the producer drains properly by checking that
@@ -222,7 +222,7 @@ func TestJoinReaderDrain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		jr.Run(ctx, nil)
+		jr.Run(ctx, nil, nil, 0)
 		row, meta := out.Next()
 		if row != nil {
 			t.Fatalf("row was pushed unexpectedly: %s", row)

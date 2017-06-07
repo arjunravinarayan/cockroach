@@ -22,6 +22,7 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
 
@@ -55,7 +56,7 @@ func newValuesProcessor(
 }
 
 // Run is part of the processor interface.
-func (v *valuesProcessor) Run(ctx context.Context, wg *sync.WaitGroup) {
+func (v *valuesProcessor) Run(ctx context.Context, wg *sync.WaitGroup, localStorage *engine.RocksDB, localStoragePrefix uint64) {
 	if wg != nil {
 		defer wg.Done()
 	}

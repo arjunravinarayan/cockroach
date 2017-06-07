@@ -24,10 +24,13 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 
+	"sync/atomic"
+
 	"github.com/cockroachdb/cockroach/pkg/internal/client"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 )
@@ -113,14 +116,23 @@ type Flow struct {
 
 	doneFn func()
 
+	localStorage      *engine.RocksDB
+	processorRegistry *uint64
+
 	status flowStatus
 }
 
-func newFlow(flowCtx FlowCtx, flowReg *flowRegistry, syncFlowConsumer RowReceiver) *Flow {
+func newFlow(
+	flowCtx FlowCtx,
+	flowReg *flowRegistry,
+	syncFlowConsumer RowReceiver,
+processorRegistry *uint64,
+) *Flow {
 	f := &Flow{
 		FlowCtx:          flowCtx,
 		flowRegistry:     flowReg,
 		syncFlowConsumer: syncFlowConsumer,
+		processorRegistry: processorRegistry,
 	}
 	f.status = FlowNotStarted
 	return f
@@ -318,7 +330,8 @@ func (f *Flow) Start(ctx context.Context, doneFn func()) {
 		o.start(ctx, &f.waitGroup)
 	}
 	for _, p := range f.processors {
-		go p.Run(ctx, &f.waitGroup)
+		nextProcessorID := atomic.AddUint64(f.processorRegistry, 1)
+		go p.Run(ctx, &f.waitGroup, f.localStorage, nextProcessorID)
 	}
 }
 
@@ -353,7 +366,8 @@ func (f *Flow) Cleanup(ctx context.Context) {
 // context (no goroutines are spawned).
 func (f *Flow) RunSync(ctx context.Context) {
 	for _, p := range f.processors {
-		p.Run(ctx, nil)
+		nextProcessorID := atomic.AddUint64(f.processorRegistry, 1)
+		p.Run(ctx, nil, f.localStorage, nextProcessorID)
 	}
 	f.Cleanup(ctx)
 }

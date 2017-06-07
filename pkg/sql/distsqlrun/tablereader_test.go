@@ -134,7 +134,7 @@ func TestTableReader(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tr.Run(context.Background(), nil)
+		tr.Run(context.Background(), nil, nil, 0)
 		if !out.ProducerClosed {
 			t.Fatalf("output RowReceiver not closed")
 		}
@@ -210,7 +210,7 @@ ALTER TABLE t TESTING_RELOCATE VALUES (ARRAY[2], 1), (ARRAY[1], 2), (ARRAY[3], 3
 	if err != nil {
 		t.Fatal(err)
 	}
-	tr.Run(context.TODO(), nil)
+	tr.Run(context.TODO(), nil, nil, 0)
 	if !out.ProducerClosed {
 		t.Fatalf("output RowReceiver not closed")
 	}

@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/pkg/errors"
 )
@@ -34,7 +35,7 @@ type sorterStrategy interface {
 	// It returns once either all the input has been exhausted or the consumer
 	// indicated that no more rows are needed. In any case, the caller is
 	// responsible for draining and closing the producer and the consumer.
-	Execute(context.Context, *sorter) error
+	Execute(context.Context, *sorter, *engine.RocksDB, uint64) error
 }
 
 // sortAllStrategy reads in all values into the wrapped rows and
@@ -58,7 +59,7 @@ func newSortAllStrategy(rows rowContainer) sorterStrategy {
 //  - loads all rows into memory;
 //  - runs sort.Sort to sort rows in place;
 //  - sends each row out to the output stream.
-func (ss *sortAllStrategy) Execute(ctx context.Context, s *sorter) error {
+func (ss *sortAllStrategy) Execute(ctx context.Context, s *sorter, _ *engine.RocksDB, _ uint64) error {
 	defer ss.rows.Close(ctx)
 	for {
 		row, err := s.input.NextRow()
@@ -121,7 +122,7 @@ func newSortTopKStrategy(rows rowContainer, k int64) sorterStrategy {
 // The execution loop for the SortTopK strategy is similar to that of the
 // SortAll strategy; the difference is that we push rows into a max-heap of size
 // at most K, and only sort those.
-func (ss *sortTopKStrategy) Execute(ctx context.Context, s *sorter) error {
+func (ss *sortTopKStrategy) Execute(ctx context.Context, s *sorter, _ *engine.RocksDB, _ uint64) error {
 	defer ss.rows.Close(ctx)
 	heapCreated := false
 	for {
@@ -180,7 +181,7 @@ func newSortChunksStrategy(rows rowContainer) sorterStrategy {
 	}
 }
 
-func (ss *sortChunksStrategy) Execute(ctx context.Context, s *sorter) error {
+func (ss *sortChunksStrategy) Execute(ctx context.Context, s *sorter, localStorage *engine.RocksDB, localStoragePrefix uint64) error {
 	defer ss.rows.Close(ctx)
 	// pivoted is a helper function that determines if the given row shares the same values for the
 	// first s.matchLen ordering columns with the given pivot.

@@ -239,9 +239,9 @@ func (s SSTableInfos) String() string {
 	return buf.String()
 }
 
-// ReadAmplification returns RocksDB's read amplification, which is the number
-// of level-0 sstables plus the number of levels, other than level 0, with at
-// least one sstable.
+// ReadAmplification returns RocksDB's worst case read amplification, which is
+// the number of level-0 sstables plus the number of levels, other than level 0,
+// with at least one sstable.
 //
 // This definition comes from here:
 // https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide#level-style-compaction
@@ -287,16 +287,28 @@ func (c RocksDBCache) Release() {
 	}
 }
 
+type TODO struct{}
+
+type RocksDBConfig struct {
+	Attrs                   roachpb.Attributes
+	DiskLocation            string
+	MaxSize                 int64
+	MaxOpenFiles            int
+	WarnLargeBatches        bool
+	WarnLargeBatchThreshold time.Duration
+	CompactionStyle         TODO
+	WALTTLInSeconds         int
+	UseDirectWrites         bool
+	BlockSize               int
+}
+
 // RocksDB is a wrapper around a RocksDB database instance.
 type RocksDB struct {
-	rdb          *C.DBEngine
-	attrs        roachpb.Attributes // Attributes for this engine
-	dir          string             // The data directory
-	tempDir      string             // A path for storing temp files (ideally under dir).
-	cache        RocksDBCache       // Shared cache.
-	maxSize      int64              // Used for calculating rebalancing and free space.
-	maxOpenFiles int                // The maximum number of open files this instance will use.
-	deallocated  chan struct{}      // Closed when the underlying handle is deallocated.
+	cfg              RocksDBConfig
+	rdb              *C.DBEngine
+	cache            RocksDBCache // Shared cache.
+	DiskTempLocation string
+	deallocated      chan struct{} // Closed when the underlying handle is deallocated.
 
 	commit struct {
 		syncutil.Mutex
@@ -317,23 +329,18 @@ var _ Engine = &RocksDB{}
 // from scratch.
 // The caller must call the engine's Close method when the engine is no longer
 // needed.
-func NewRocksDB(
-	attrs roachpb.Attributes, dir string, cache RocksDBCache, maxSize int64, maxOpenFiles int,
-) (*RocksDB, error) {
-	if dir == "" {
+func NewRocksDB(cfg RocksDBConfig, cache RocksDBCache) (*RocksDB, error) {
+	if cfg.DiskLocation == "" {
 		panic("dir must be non-empty")
 	}
 
 	r := &RocksDB{
-		attrs:        attrs,
-		dir:          dir,
-		cache:        cache.ref(),
-		maxSize:      maxSize,
-		maxOpenFiles: maxOpenFiles,
-		deallocated:  make(chan struct{}),
+		cfg:         cfg,
+		cache:       cache.ref(),
+		deallocated: make(chan struct{}),
 	}
 
-	temp := filepath.Join(dir, "tmp")
+	temp := filepath.Join(cfg.DiskLocation, "tmp")
 	if err := os.RemoveAll(temp); err != nil {
 		return nil, err
 	}
@@ -350,10 +357,12 @@ func NewRocksDB(
 
 func newMemRocksDB(attrs roachpb.Attributes, cache RocksDBCache, maxSize int64) (*RocksDB, error) {
 	r := &RocksDB{
-		attrs: attrs,
+		cfg: RocksDBConfig{
+			Attrs:   attrs,
+			MaxSize: maxSize,
+		},
 		// dir: empty dir == "mem" RocksDB instance.
 		cache:       cache.ref(),
-		maxSize:     maxSize,
 		deallocated: make(chan struct{}),
 	}
 
@@ -370,17 +379,17 @@ func newMemRocksDB(attrs roachpb.Attributes, cache RocksDBCache, maxSize int64) 
 
 // String formatter.
 func (r *RocksDB) String() string {
-	return fmt.Sprintf("%s=%s", r.attrs.Attrs, r.dir)
+	return fmt.Sprintf("%s=%s", r.Attrs(), r.cfg.DiskLocation)
 }
 
 func (r *RocksDB) open() error {
 	var ver storageVersion
-	if len(r.dir) != 0 {
-		log.Infof(context.TODO(), "opening rocksdb instance at %q", r.dir)
+	if len(r.cfg.DiskLocation) != 0 {
+		log.Infof(context.TODO(), "opening rocksdb instance at %q", r.cfg.DiskLocation)
 
 		// Check the version number.
 		var err error
-		if ver, err = getVersion(r.dir); err != nil {
+		if ver, err = getVersion(r.cfg.DiskLocation); err != nil {
 			return err
 		}
 		if ver < versionMinimum || ver > versionCurrent {
@@ -401,7 +410,7 @@ func (r *RocksDB) open() error {
 	blockSize := envutil.EnvOrDefaultBytes("COCKROACH_ROCKSDB_BLOCK_SIZE", defaultBlockSize)
 	walTTL := envutil.EnvOrDefaultDuration("COCKROACH_ROCKSDB_WAL_TTL", 0).Seconds()
 
-	status := C.DBOpen(&r.rdb, goToCSlice([]byte(r.dir)),
+	status := C.DBOpen(&r.rdb, goToCSlice([]byte(r.cfg.DiskLocation)),
 		C.DBOptions{
 			cache:             r.cache.cache,
 			block_size:        C.uint64_t(blockSize),
@@ -409,7 +418,7 @@ func (r *RocksDB) open() error {
 			use_direct_writes: C.bool(useDirectWrites),
 			logging_enabled:   C.bool(log.V(3)),
 			num_cpu:           C.int(runtime.NumCPU()),
-			max_open_files:    C.int(r.maxOpenFiles),
+			max_open_files:    C.int(r.cfg.MaxOpenFiles),
 		})
 	if err := statusToError(status); err != nil {
 		return errors.Errorf("could not open rocksdb instance: %s", err)
@@ -417,7 +426,7 @@ func (r *RocksDB) open() error {
 
 	// Update or add the version file if needed.
 	if ver < versionCurrent {
-		if err := writeVersionFile(r.dir); err != nil {
+		if err := writeVersionFile(r.cfg.DiskLocation); err != nil {
 			return err
 		}
 	}
@@ -438,12 +447,12 @@ func (r *RocksDB) Close() {
 		log.Errorf(context.TODO(), "closing unopened rocksdb instance")
 		return
 	}
-	if len(r.dir) == 0 {
+	if len(r.cfg.DiskLocation) == 0 {
 		if log.V(1) {
 			log.Infof(context.TODO(), "closing in-memory rocksdb instance")
 		}
 	} else {
-		log.Infof(context.TODO(), "closing rocksdb instance at %q", r.dir)
+		log.Infof(context.TODO(), "closing rocksdb instance at %q", r.cfg.DiskLocation)
 	}
 	if r.rdb != nil {
 		C.DBClose(r.rdb)
@@ -463,7 +472,7 @@ func (r *RocksDB) Closed() bool {
 // and potentially other labels to identify important attributes of
 // the engine.
 func (r *RocksDB) Attrs() roachpb.Attributes {
-	return r.attrs
+	return r.cfg.Attrs
 }
 
 // Put sets the given key to the value provided.
@@ -531,15 +540,15 @@ func (r *RocksDB) Iterate(start, end MVCCKey, f func(MVCCKeyValue) (bool, error)
 // Capacity queries the underlying file system for disk capacity information.
 func (r *RocksDB) Capacity() (roachpb.StoreCapacity, error) {
 	fileSystemUsage := gosigar.FileSystemUsage{}
-	dir := r.dir
+	dir := r.cfg.DiskLocation
 	if dir == "" {
 		// This is an in-memory instance. Pretend we're empty since we
 		// don't know better and only use this for testing. Using any
 		// part of the actual file system here can throw off allocator
 		// rebalancing in a hard-to-trace manner. See #7050.
 		return roachpb.StoreCapacity{
-			Capacity:  r.maxSize,
-			Available: r.maxSize,
+			Capacity:  r.cfg.MaxSize,
+			Available: r.cfg.MaxSize,
 		}, nil
 	}
 	if err := fileSystemUsage.Get(dir); err != nil {
@@ -560,7 +569,7 @@ func (r *RocksDB) Capacity() (roachpb.StoreCapacity, error) {
 	// If no size limitation have been placed on the store size or if the
 	// limitation is greater than what's available, just return the actual
 	// totals.
-	if r.maxSize == 0 || r.maxSize >= fsuTotal || r.dir == "" {
+	if r.cfg.MaxSize == 0 || r.cfg.MaxSize >= fsuTotal || r.cfg.DiskLocation == "" {
 		return roachpb.StoreCapacity{
 			Capacity:  fsuTotal,
 			Available: fsuAvail,
@@ -570,7 +579,7 @@ func (r *RocksDB) Capacity() (roachpb.StoreCapacity, error) {
 	// Find the total size of all the files in the r.dir and all its
 	// subdirectories.
 	var totalUsedBytes int64
-	if errOuter := filepath.Walk(r.dir, func(path string, info os.FileInfo, err error) error {
+	if errOuter := filepath.Walk(r.cfg.DiskLocation, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -582,7 +591,7 @@ func (r *RocksDB) Capacity() (roachpb.StoreCapacity, error) {
 		return roachpb.StoreCapacity{}, errOuter
 	}
 
-	available := r.maxSize - totalUsedBytes
+	available := r.cfg.MaxSize - totalUsedBytes
 	if available > fsuAvail {
 		available = fsuAvail
 	}
@@ -591,8 +600,8 @@ func (r *RocksDB) Capacity() (roachpb.StoreCapacity, error) {
 	}
 
 	return roachpb.StoreCapacity{
-		Capacity:  r.maxSize,
-		Available: available,
+		Capacity:  r.cfg.MaxSize,
+		Available: int64(available),
 	}, nil
 }
 
@@ -603,7 +612,7 @@ func (r *RocksDB) Compact() error {
 
 // Destroy destroys the underlying filesystem data associated with the database.
 func (r *RocksDB) Destroy() error {
-	return statusToError(C.DBDestroy(goToCSlice([]byte(r.dir))))
+	return statusToError(C.DBDestroy(goToCSlice([]byte(r.cfg.DiskLocation))))
 }
 
 // Flush causes RocksDB to write all in-memory data to disk immediately.
@@ -1230,10 +1239,9 @@ func (r *rocksDBBatch) commitInternal(sync bool) error {
 		r.batch = nil
 	}
 
-	const batchCommitWarnThreshold = 500 * time.Millisecond
-	if elapsed := timeutil.Since(start); elapsed >= batchCommitWarnThreshold {
+	if elapsed := timeutil.Since(start); r.parent.cfg.WarnLargeBatches && (elapsed >= r.parent.cfg.WarnLargeBatchThreshold) {
 		log.Warningf(context.TODO(), "batch [%d/%d/%d] commit took %s (>%s):\n%s",
-			count, size, r.flushes, elapsed, batchCommitWarnThreshold, debug.Stack())
+			count, size, r.flushes, elapsed, r.parent.cfg.WarnLargeBatchThreshold, debug.Stack())
 	}
 
 	return nil
@@ -1837,7 +1845,7 @@ func RunLDB(args []string) {
 
 // GetTempDir returns a temp path (usually under the store directory).
 func (r *RocksDB) GetTempDir() string {
-	return r.tempDir
+	return r.DiskTempLocation
 }
 
 // SetTempDir allows overriding the tempdir returned by GetTempDir.
@@ -1845,7 +1853,7 @@ func (r *RocksDB) SetTempDir(d string) error {
 	if err := os.MkdirAll(d, 0755); err != nil {
 		return err
 	}
-	r.tempDir = d
+	r.DiskTempLocation = d
 	return nil
 }
 

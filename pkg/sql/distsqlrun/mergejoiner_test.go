@@ -364,7 +364,7 @@ func TestMergeJoiner(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			m.Run(context.Background(), nil)
+			m.Run(context.Background(), nil, nil, 0)
 
 			if !out.ProducerClosed {
 				t.Fatalf("output RowReceiver not closed")

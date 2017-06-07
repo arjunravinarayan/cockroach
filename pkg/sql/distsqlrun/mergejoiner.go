@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/net/context"
 
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
@@ -73,7 +74,7 @@ func newMergeJoiner(
 }
 
 // Run is part of the processor interface.
-func (m *mergeJoiner) Run(ctx context.Context, wg *sync.WaitGroup) {
+func (m *mergeJoiner) Run(ctx context.Context, wg *sync.WaitGroup, localStorage *engine.RocksDB, localStoragePrefix uint64) {
 	if wg != nil {
 		defer wg.Done()
 	}

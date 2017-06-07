@@ -325,7 +325,7 @@ func TestAggregator(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ag.Run(context.Background(), nil)
+			ag.Run(context.Background(), nil, nil, 0)
 
 			var expected []string
 			for _, row := range c.expected {

@@ -148,7 +148,7 @@ func TestDistinct(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			d.Run(context.Background(), nil)
+			d.Run(context.Background(), nil, nil, 0)
 			if !out.ProducerClosed {
 				t.Fatalf("output RowReceiver not closed")
 			}

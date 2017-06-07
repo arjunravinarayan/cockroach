@@ -24,6 +24,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/pkg/errors"
@@ -34,7 +35,7 @@ import (
 type processor interface {
 	// Run is the main loop of the processor.
 	// If wg is non-nil, wg.Done is called before exiting.
-	Run(ctx context.Context, wg *sync.WaitGroup)
+	Run(ctx context.Context, wg *sync.WaitGroup, localStorage *engine.RocksDB, localStoragePrefix uint64)
 }
 
 // procOutputHelper is a helper type that performs filtering and projection on
@@ -310,7 +311,7 @@ func newNoopProcessor(
 }
 
 // Run is part of the processor interface.
-func (n *noopProcessor) Run(ctx context.Context, wg *sync.WaitGroup) {
+func (n *noopProcessor) Run(ctx context.Context, wg *sync.WaitGroup, localStorage *engine.RocksDB, localStoragePrefix uint64) {
 	if wg != nil {
 		defer wg.Done()
 	}

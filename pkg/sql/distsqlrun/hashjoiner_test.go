@@ -518,7 +518,7 @@ func TestHashJoiner(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			h.Run(context.Background(), nil)
+			h.Run(context.Background(), nil, nil, 0)
 
 			if !out.ProducerClosed {
 				t.Fatalf("output RowReceiver not closed")
@@ -627,7 +627,7 @@ func TestHashJoinerDrain(t *testing.T) {
 	}
 
 	out.ConsumerDone()
-	h.Run(context.Background(), nil)
+	h.Run(context.Background(), nil, nil, 0)
 
 	if !out.ProducerClosed {
 		t.Fatalf("output RowReceiver not closed")
@@ -735,7 +735,7 @@ func TestHashJoinerDrainAfterBuildPhaseError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.Run(context.Background(), nil)
+	h.Run(context.Background(), nil, nil, 0)
 
 	if !out.ProducerClosed {
 		t.Fatalf("output RowReceiver not closed")

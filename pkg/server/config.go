@@ -461,13 +461,19 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 
 			details = append(details, fmt.Sprintf("store %d: RocksDB, max size %s, max open file limit %d",
 				i, humanizeutil.IBytes(sizeInBytes), openFileLimitPerStore))
-			eng, err := engine.NewRocksDB(
-				spec.Attributes,
-				spec.Path,
-				cache,
-				sizeInBytes,
-				openFileLimitPerStore,
-			)
+			rocksDBConfig := engine.RocksDBConfig{
+				Attrs:                   spec.Attributes,
+				DiskLocation:            spec.Path,
+				MaxSize:                 sizeInBytes,
+				MaxOpenFiles:            openFileLimitPerStore,
+				WarnLargeBatches:        true,
+				WarnLargeBatchThreshold: time.Duration(500000),
+				WALTTLInSeconds:         -1,
+				UseDirectWrites:         true,
+				BlockSize:               -1,
+			}
+
+			eng, err := engine.NewRocksDB(rocksDBConfig, cache)
 			if err != nil {
 				return Engines{}, err
 			}

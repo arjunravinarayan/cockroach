@@ -93,7 +93,7 @@ func runProcessors(tc testCase) (sqlbase.EncDatumRows, error) {
 		return nil, err
 	}
 
-	s.Run(context.Background(), nil)
+	s.Run(context.Background(), nil, nil, 0)
 	if !out.ProducerClosed {
 		return nil, errors.Errorf("output RowReceiver not closed")
 	}

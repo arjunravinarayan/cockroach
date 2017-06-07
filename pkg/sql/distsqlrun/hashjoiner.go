@@ -24,6 +24,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/mon"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
@@ -98,7 +99,7 @@ const sizeOfBoolSlice = unsafe.Sizeof([]bool{})
 const sizeOfBool = unsafe.Sizeof(true)
 
 // Run is part of the processor interface.
-func (h *hashJoiner) Run(ctx context.Context, wg *sync.WaitGroup) {
+func (h *hashJoiner) Run(ctx context.Context, wg *sync.WaitGroup, localStorage *engine.RocksDB, localStoragePrefix uint64) {
 	if wg != nil {
 		defer wg.Done()
 	}
