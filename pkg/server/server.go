@@ -272,14 +272,16 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	s.registry.AddMetric(distSQLMetrics.MaxBytesHist)
 
 	// Set up the DistSQL server.
+	distSQLEngineLocation := envutil.EnvOrDefaultString("COCKROACH_LOCAL_QUERY_STORAGE", fmt.Sprintf("%s/DISTSQL_TMP", s.cfg.Stores.Specs[0].Path))
 	distSQLCfg := distsqlrun.ServerConfig{
 		AmbientContext: s.cfg.AmbientCtx,
 		DB:             s.db,
 		// DistSQL also uses a DB that bypasses the TxnCoordSender.
-		FlowDB:     client.NewDB(s.distSender, s.clock),
-		RPCContext: s.rpcContext,
-		Stopper:    s.stopper,
-		NodeID:     &s.nodeIDContainer,
+		FlowDB:      client.NewDB(s.distSender, s.clock),
+		RPCContext:  s.rpcContext,
+		Stopper:     s.stopper,
+		NodeID:      &s.nodeIDContainer,
+		RocksDBPath: distSQLEngineLocation,
 
 		ParentMemoryMonitor: &rootSQLMemoryMonitor,
 		Counter:             distSQLMetrics.CurBytesCount,

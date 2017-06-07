@@ -24,6 +24,8 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 
+	"os"
+
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/internal/client"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -31,6 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/mon"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -84,6 +87,7 @@ type ServerConfig struct {
 	RPCContext   *rpc.Context
 	Stopper      *stop.Stopper
 	TestingKnobs TestingKnobs
+	RocksDBPath  string
 
 	ParentMemoryMonitor *mon.MemoryMonitor
 	Counter             *metric.Counter
@@ -95,16 +99,48 @@ type ServerConfig struct {
 // ServerImpl implements the server for the distributed SQL APIs.
 type ServerImpl struct {
 	ServerConfig
-	flowRegistry  *flowRegistry
-	flowScheduler *flowScheduler
-	memMonitor    mon.MemoryMonitor
-	regexpCache   *parser.RegexpCache
+	flowRegistry      *flowRegistry
+	flowScheduler     *flowScheduler
+	memMonitor        mon.MemoryMonitor
+	regexpCache       *parser.RegexpCache
+	engine            *engine.RocksDB
+	processorRegistry *uint64
 }
 
 var _ DistSQLServer = &ServerImpl{}
 
+func NewLocalStorage(ctx context.Context, RocksDBPath string) *engine.RocksDB {
+	// TODO(arjun): set sane defaults
+	rocksDBCache := engine.NewRocksDBCache(0)
+	if err := os.RemoveAll(RocksDBPath); err != nil {
+		log.Warningf(ctx, "could not clear RocksDB location for DistSQL execution, performance on large query execution may be impacted: %v", err.Error())
+	}
+	if err := os.Mkdir(RocksDBPath, 0700); err != nil {
+		log.Warningf(ctx, "could not create directory for RocksDB for DistSQL execution, performance on large query execution may be impacted: %v", err.Error())
+	}
+
+	rocksDBCfg := engine.RocksDBConfig{
+		Attrs:            roachpb.Attributes{},
+		DiskLocation:     RocksDBPath,
+		MaxSize:          0,
+		MaxOpenFiles:     engine.DefaultMaxOpenFiles,
+		WarnLargeBatches: false,
+		CompactionStyle:  engine.TODO{},
+		WALTTLInSeconds:  -1,
+		UseDirectWrites:  false,
+		BlockSize:        -1,
+	}
+	rocksDB, err := engine.NewRocksDB(rocksDBCfg, rocksDBCache)
+	if err != nil {
+		log.Warningf(ctx, "could not instantiate RocksDB instance for DistSQL execution, queries larger than memory will abort: %v", err.Error())
+	}
+
+	return rocksDB
+}
+
 // NewServer instantiates a DistSQLServer.
 func NewServer(ctx context.Context, cfg ServerConfig) *ServerImpl {
+	var processorRegistry uint64
 	ds := &ServerImpl{
 		ServerConfig:  cfg,
 		regexpCache:   parser.NewRegexpCache(512),
@@ -112,9 +148,19 @@ func NewServer(ctx context.Context, cfg ServerConfig) *ServerImpl {
 		flowScheduler: newFlowScheduler(cfg.AmbientContext, cfg.Stopper),
 		memMonitor: mon.MakeMonitor("distsql",
 			cfg.Counter, cfg.Hist, -1 /* increment: use default block size */, noteworthyMemoryUsageBytes),
+		engine:            NewLocalStorage(ctx, cfg.RocksDBPath),
+		processorRegistry: &processorRegistry,
 	}
 	ds.memMonitor.Start(ctx, cfg.ParentMemoryMonitor, mon.BoundAccount{})
 	return ds
+}
+
+// Shutdown gracefully shuts down the DistSQL server.
+func (ds *ServerImpl) Shutdown(ctx context.Context) {
+	ds.engine.Close()
+	if err := os.RemoveAll(ds.RocksDBPath); err != nil {
+		log.Warningf(ctx, "could not delete DistSQL execution location RocksDB while shutting down DistSQL server: %v", err.Error())
+	}
 }
 
 // Start launches workers for the server.
@@ -199,7 +245,7 @@ func (ds *ServerImpl) setupFlow(
 
 	ctx = flowCtx.AnnotateCtx(ctx)
 
-	f := newFlow(flowCtx, ds.flowRegistry, syncFlowConsumer)
+	f := newFlow(flowCtx, ds.flowRegistry, syncFlowConsumer, ds.processorRegistry, ds.engine)
 	flowCtx.AddLogTagStr("f", f.id.Short())
 	if err := f.setup(ctx, &req.Flow); err != nil {
 		log.Errorf(ctx, "error setting up flow: %s", err)

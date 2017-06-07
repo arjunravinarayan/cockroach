@@ -183,7 +183,7 @@ func TestSorter(t *testing.T) {
 				evalCtx: evalCtx,
 			}
 
-			s, err := newSorter(&flowCtx, &ss, in, &c.post, out)
+			s, err := newSorter(&flowCtx, &ss, in, &c.post, out, nil, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
