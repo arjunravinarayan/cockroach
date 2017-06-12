@@ -61,6 +61,9 @@ func TestRocksDBMap(t *testing.T) {
 	diskMap := NewRocksDBMap(0 /* prefix */, r)
 	defer diskMap.Close()
 
+	writeBatch := diskMap.NewWriteBatchSize(64)
+	defer writeBatch.Close()
+
 	rng := rand.New(rand.NewSource(int64(time.Now().UnixNano())))
 
 	numKeysToWrite := 100
@@ -70,19 +73,29 @@ func TestRocksDBMap(t *testing.T) {
 		v := []byte(fmt.Sprintf("%d", rng.Int()))
 
 		keys[i] = string(k)
-		if err := diskMap.Put(k, v); err != nil {
-			t.Fatal(err)
-		}
-
-		// Check key was inserted properly.
-		if b, err := diskMap.Get(k); err != nil {
-			t.Fatal(err)
-		} else if bytes.Compare(b, v) != 0 {
-			t.Fatal("expected %s for value of key %s but got %s", v, k, b)
+		// Use batch on every other write.
+		if i%2 == 0 {
+			if err := diskMap.Put(k, v); err != nil {
+				t.Fatal(err)
+			}
+			// Check key was inserted properly.
+			if b, err := diskMap.Get(k); err != nil {
+				t.Fatal(err)
+			} else if bytes.Compare(b, v) != 0 {
+				t.Fatal("expected %s for value of key %s but got %s", v, k, b)
+			}
+		} else {
+			if err := writeBatch.Put(k, v); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 
 	sort.StringSlice(keys).Sort()
+
+	if err := writeBatch.Flush(); err != nil {
+		t.Fatal(err)
+	}
 
 	i := diskMap.NewIterator()
 	defer i.Close()
@@ -213,13 +226,16 @@ func BenchmarkRocksDBMapWrite(b *testing.B) {
 		b.Run(fmt.Sprintf("InputSize%d", inputSize), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				diskMap := NewRocksDBMap(uint64(i) /* prefix */, r)
+				writeBatch := diskMap.NewWriteBatch()
 				for j := 0; j < inputSize; j++ {
 					k := fmt.Sprintf("%d", rng.Int())
 					v := fmt.Sprintf("%d", rng.Int())
-					if err := diskMap.Put([]byte(k), []byte(v)); err != nil {
+					if err := writeBatch.Put([]byte(k), []byte(v)); err != nil {
 						b.Fatal(err)
 					}
 				}
+				// This Close() flushes writes.
+				writeBatch.Close()
 				diskMap.Close()
 			}
 		})
