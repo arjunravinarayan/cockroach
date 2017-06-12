@@ -53,14 +53,30 @@ func TestDiskMap(t *testing.T) {
 	diskMap := NewRocksDBMap(r)
 	defer diskMap.Close()
 
+	writeBatch := diskMap.NewWriteBatchSize(64)
+	defer writeBatch.Close()
+
 	rng := rand.New(rand.NewSource(int64(time.Now().UnixNano())))
 
-	for i := 0; i < 100; i++ {
-		k := fmt.Sprintf("%d", rng.Int())
-		v := fmt.Sprintf("%d", rng.Int())
-		if err := diskMap.Put([]byte(k), []byte(v)); err != nil {
-			t.Fatal(err)
+	numKeysToWrite := 100
+	for i := 0; i < numKeysToWrite; i++ {
+		k := []byte(fmt.Sprintf("%d", rng.Int()))
+		v := []byte(fmt.Sprintf("%d", rng.Int()))
+
+		// Use batch on every other write.
+		if i%2 == 0 {
+			if err := diskMap.Put(k, v); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := writeBatch.Put(k, v); err != nil {
+				t.Fatal(err)
+			}
 		}
+	}
+
+	if err := writeBatch.Flush(); err != nil {
+		t.Fatal(err)
 	}
 
 	i := diskMap.NewIterator()
@@ -73,11 +89,16 @@ func TestDiskMap(t *testing.T) {
 	lastKey := i.Key()
 	i.Next()
 
+	numKeysRead := 1
 	for ; i.Valid(); i.Next() {
 		curKey := i.Key()
 		if bytes.Compare(curKey, lastKey) < 0 {
 			t.Fatalf("expected keys in sorted order but %s is larger than %s", curKey, lastKey)
 		}
 		lastKey = curKey
+		numKeysRead++
+	}
+	if numKeysRead != numKeysToWrite {
+		t.Fatalf("expected to read %d keys but only read %d", numKeysToWrite, numKeysRead)
 	}
 }
