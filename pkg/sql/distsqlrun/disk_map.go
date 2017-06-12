@@ -79,7 +79,7 @@ type RocksDBMapWriteBatch struct {
 
 	makeKey func(k []byte) engine.MVCCKey
 	batch   engine.Batch
-	store   *engine.RocksDB
+	store   engine.Engine
 }
 
 type RocksDBMapIterator struct {
@@ -93,7 +93,7 @@ type RocksDBMapIterator struct {
 type RocksDBMap struct {
 	// TODO(asubiotto): Add memory accounting.
 	prefix []byte
-	store  *engine.RocksDB
+	store  engine.Engine
 }
 
 var _ SortedDiskMapWriteBatch = &RocksDBMapWriteBatch{}
@@ -103,7 +103,7 @@ var _ SortedDiskMap = RocksDBMap{}
 // NewRocksDBMap creates a new RocksDBMap with the passed in engine.RocksDB as
 // the underlying storage engine. The RocksDBMap instance will have its own
 // keyspace.
-func NewRocksDBMap(prefix uint64, r *engine.RocksDB) (RocksDBMap, error) {
+func NewRocksDBMap(prefix uint64, r engine.Engine) (RocksDBMap, error) {
 	// When we close this instance, we also delete the associated keyspace. If
 	// we accepted math.MaxUint64 as a prefix, our prefixBytes would be
 	// []byte{0xff, ..., 0xff} for which there is no end key, thus deleting

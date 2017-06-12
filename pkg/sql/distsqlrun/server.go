@@ -85,7 +85,6 @@ type ServerConfig struct {
 	RPCContext   *rpc.Context
 	Stopper      *stop.Stopper
 	TestingKnobs TestingKnobs
-	RocksDBPath  string
 
 	ParentMemoryMonitor *mon.MemoryMonitor
 	Counter             *metric.Counter

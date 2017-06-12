@@ -19,6 +19,7 @@ package distsqlrun
 import (
 	"golang.org/x/net/context"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/pkg/errors"
@@ -60,6 +61,21 @@ func newSortAllStrategy(rows rowContainer) sorterStrategy {
 //  - sends each row out to the output stream.
 func (ss *sortAllStrategy) Execute(ctx context.Context, s *sorter) error {
 	defer ss.rows.Close(ctx)
+	if !s.testingKnobForceDisk {
+		err := ss.execMemImpl(ctx, s)
+		if pgErr, ok := err.(*pgerror.Error); !(ok && pgErr.Code == pgerror.CodeOutOfMemoryError) {
+			return err
+		}
+	}
+	diskContainer, err := makeDiskRowContainer(ctx, s.localStoragePrefix, ss.rows.types, ss.rows.ordering, ss.rows, s.localStorage)
+	if err != nil {
+		return err
+	}
+	defer diskContainer.Close()
+	return ss.execDiskImpl(ctx, s, diskContainer)
+}
+
+func (ss *sortAllStrategy) execMemImpl(ctx context.Context, s *sorter) error {
 	for {
 		row, err := s.input.NextRow()
 		if err != nil {
@@ -82,6 +98,32 @@ func (ss *sortAllStrategy) Execute(ctx context.Context, s *sorter) error {
 		}
 		ss.rows.PopFirst()
 	}
+	return nil
+}
+
+func (ss *sortAllStrategy) execDiskImpl(ctx context.Context, s *sorter, d diskRowContainer) error {
+	for {
+		row, err := s.input.NextRow()
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			break
+		}
+		if err := d.AddRow(ctx, row); err != nil {
+			return err
+		}
+	}
+
+	i := d.NewIterator(ctx)
+	defer i.Close()
+	for i.Rewind(); i.Valid(); i.Next() {
+		consumerStatus, err := s.out.emitRow(ctx, i.Row(ctx))
+		if err != nil || consumerStatus != NeedMoreRows {
+			return err
+		}
+	}
+
 	return nil
 }
 

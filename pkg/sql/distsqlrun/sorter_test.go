@@ -168,48 +168,59 @@ func TestSorter(t *testing.T) {
 		},
 	}
 
-	for _, c := range testCases {
-		t.Run("", func(t *testing.T) {
-			ss := c.spec
-			types := make([]sqlbase.ColumnType, len(c.input[0]))
-			for i := range types {
-				types[i] = columnTypeInt
-			}
-			in := NewRowBuffer(types, c.input, RowBufferArgs{})
-			out := &RowBuffer{}
-			evalCtx := parser.MakeTestingEvalContext()
-			defer evalCtx.Stop(context.Background())
-			flowCtx := FlowCtx{
-				evalCtx: evalCtx,
-			}
+	rocksDB, err := newTestingRocksDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRocks(rocksDB)
 
-			s, err := newSorter(&flowCtx, &ss, in, &c.post, out, nil, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.Run(context.Background(), nil)
-			if !out.ProducerClosed {
-				t.Fatalf("output RowReceiver not closed")
-			}
-
-			var retRows sqlbase.EncDatumRows
-			for {
-				row, meta := out.Next()
-				if !meta.Empty() {
-					t.Fatalf("unexpected metadata: %v", meta)
+	for _, forceDisk := range []bool{false, true} {
+		for _, c := range testCases {
+			t.Run("", func(t *testing.T) {
+				ss := c.spec
+				types := make([]sqlbase.ColumnType, len(c.input[0]))
+				for i := range types {
+					types[i] = columnTypeInt
 				}
-				if row == nil {
-					break
+				in := NewRowBuffer(types, c.input, RowBufferArgs{})
+				out := &RowBuffer{}
+				evalCtx := parser.MakeTestingEvalContext()
+				defer evalCtx.Stop(context.Background())
+				flowCtx := FlowCtx{
+					evalCtx: evalCtx,
 				}
-				retRows = append(retRows, row)
-			}
 
-			expStr := c.expected.String()
-			retStr := retRows.String()
-			if expStr != retStr {
-				t.Errorf("invalid results; expected:\n   %s\ngot:\n   %s",
-					expStr, retStr)
-			}
-		})
+				// Use the 0 prefix everywhere to test that storage is being properly cleaned up.
+				s, err := newSorter(&flowCtx, &ss, in, &c.post, out, rocksDB, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.testingKnobForceDisk = forceDisk
+
+				s.Run(context.Background(), nil)
+				if !out.ProducerClosed {
+					t.Fatalf("output RowReceiver not closed")
+				}
+
+				var retRows sqlbase.EncDatumRows
+				for {
+					row, meta := out.Next()
+					if !meta.Empty() {
+						t.Fatalf("unexpected metadata: %v", meta)
+					}
+					if row == nil {
+						break
+					}
+					retRows = append(retRows, row)
+				}
+
+				expStr := c.expected.String()
+				retStr := retRows.String()
+				if expStr != retStr {
+					t.Errorf("invalid results; expected:\n   %s\ngot:\n   %s",
+						expStr, retStr)
+				}
+			})
+		}
 	}
 }

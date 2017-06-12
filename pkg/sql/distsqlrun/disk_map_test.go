@@ -30,9 +30,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 )
 
-const rocksDBMapPath = "rocksdb_temp"
+const rocksDBMapPath string = "./RocksDBTestLocation"
 
-func newRocks() (*engine.RocksDB, error) {
+func newTestingRocksDB() (*engine.RocksDB, error) {
 	return engine.NewRocksDB(
 		engine.RocksDBConfig{
 			DiskLocation: rocksDBMapPath,
@@ -50,7 +50,7 @@ func closeRocks(r *engine.RocksDB) {
 
 func TestRocksDBMap(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	r, err := newRocks()
+	r, err := newTestingRocksDB()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestRocksDBMap(t *testing.T) {
 // another instance's data.
 func TestRocksDBMapSandbox(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	r, err := newRocks()
+	r, err := newTestingRocksDB()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestRocksDBMapSandbox(t *testing.T) {
 }
 
 func BenchmarkRocksDBMapWrite(b *testing.B) {
-	r, err := newRocks()
+	r, err := newTestingRocksDB()
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func BenchmarkRocksDBMapWrite(b *testing.B) {
 }
 
 func BenchmarkRocksDBMapIteration(b *testing.B) {
-	r, err := newRocks()
+	r, err := newTestingRocksDB()
 	if err != nil {
 		b.Fatal(err)
 	}
