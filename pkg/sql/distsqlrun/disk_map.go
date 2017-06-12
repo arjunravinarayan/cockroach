@@ -77,8 +77,9 @@ type RocksDBMapWriteBatch struct {
 	capacity         int
 	numBytesBuffered int
 
-	batch engine.Batch
-	store *engine.RocksDB
+	makeKey func(k []byte) engine.MVCCKey
+	batch   engine.Batch
+	store   *engine.RocksDB
 }
 
 type RocksDBMapIterator struct {
@@ -146,7 +147,7 @@ func (r RocksDBMap) NewWriteBatch() SortedDiskMapWriteBatch {
 }
 
 func (r RocksDBMap) NewWriteBatchSize(size int) SortedDiskMapWriteBatch {
-	return &RocksDBMapWriteBatch{capacity: size, batch: r.store.NewWriteOnlyBatch(), store: r.store}
+	return &RocksDBMapWriteBatch{capacity: size, makeKey: r.makeKey, batch: r.store.NewWriteOnlyBatch(), store: r.store}
 }
 
 func (r RocksDBMap) Close() {
@@ -202,7 +203,7 @@ func (i RocksDBMapIterator) Close() {
 }
 
 func (b *RocksDBMapWriteBatch) Put(k []byte, v []byte) error {
-	if err := b.batch.Put(engine.MVCCKey{Key: k}, v); err != nil {
+	if err := b.batch.Put(b.makeKey(k), v); err != nil {
 		return err
 	}
 	if b.numBytesBuffered += len(k) + len(v); b.numBytesBuffered >= b.capacity {
