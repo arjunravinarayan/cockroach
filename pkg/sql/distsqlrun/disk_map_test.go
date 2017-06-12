@@ -31,8 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 )
 
-const rocksDBMapPath = "rocksdb_temp"
-
 func newRocks() (*engine.RocksDB, error) {
 	return engine.NewRocksDB(
 		roachpb.Attributes{},
