@@ -17,9 +17,14 @@
 package distsqlrun
 
 import (
+	"os"
+
 	"golang.org/x/net/context"
 
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/mon"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/pkg/errors"
 )
@@ -54,12 +59,42 @@ func newSortAllStrategy(rows rowContainer) sorterStrategy {
 	}
 }
 
+// TODO(asubiotto): Temporary. We will have access to an instance.
+const rocksDBMapPath = "rocksdb_temp"
+
 // The execution loop for the SortAll strategy:
 //  - loads all rows into memory;
 //  - runs sort.Sort to sort rows in place;
 //  - sends each row out to the output stream.
 func (ss *sortAllStrategy) Execute(ctx context.Context, s *sorter) error {
 	defer ss.rows.Close(ctx)
+	err := ss.execMemImpl(ctx, s)
+	if _, ok := err.(*mon.MemoryError); !ok {
+		return err
+	}
+	r, err := engine.NewRocksDB(
+		roachpb.Attributes{},
+		rocksDBMapPath,
+		engine.NewRocksDBCache(512<<20),
+		0,
+		engine.DefaultMaxOpenFiles,
+	)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		r.Close()
+		os.RemoveAll(rocksDBMapPath)
+		os.Mkdir(rocksDBMapPath, 0700)
+	}()
+	return ss.execDiskImpl(
+		ctx,
+		s,
+		makeDiskRowContainer(ctx, r, ss.rows.types, ss.rows.ordering, ss.rows),
+	)
+}
+
+func (ss *sortAllStrategy) execMemImpl(ctx context.Context, s *sorter) error {
 	for {
 		row, err := s.input.NextRow()
 		if err != nil {
@@ -82,6 +117,34 @@ func (ss *sortAllStrategy) Execute(ctx context.Context, s *sorter) error {
 		}
 		ss.rows.PopFirst()
 	}
+	return nil
+}
+
+// TODO(asubiotto): The in-memory and disk row containers should be put behind
+// the same interface to avoid having two split implementations.
+func (ss *sortAllStrategy) execDiskImpl(ctx context.Context, s *sorter, d diskRowContainer) error {
+	for {
+		row, err := s.input.NextRow()
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			break
+		}
+		if err := d.AddRow(ctx, row); err != nil {
+			return err
+		}
+	}
+
+	i := d.NewIterator(ctx)
+	defer i.Close()
+	for i.Rewind(); i.Valid(); i.Next() {
+		consumerStatus, err := s.out.emitRow(ctx, i.Row(ctx))
+		if err != nil || consumerStatus != NeedMoreRows {
+			return err
+		}
+	}
+
 	return nil
 }
 

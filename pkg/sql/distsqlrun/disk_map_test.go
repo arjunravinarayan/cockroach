@@ -29,8 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 )
 
-const rocksDBMapPath = "rocksdb_temp"
-
 func TestDiskMap(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	r, err := engine.NewRocksDB(
