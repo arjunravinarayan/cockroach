@@ -563,10 +563,24 @@ func (mm *MemoryMonitor) releaseMemory(ctx context.Context, sz int64) {
 	}
 }
 
+type MemoryError struct {
+	pgerr *pgerror.Error
+}
+
+func (m *MemoryError) Error() string {
+	return m.pgerr.Error()
+}
+
 func newMemoryError(name string, requested int64, budget int64) error {
-	return pgerror.NewErrorf(pgerror.CodeOutOfMemoryError,
-		"%s: memory budget exceeded: %d bytes requested, %d bytes in budget",
-		name, requested, budget)
+	return &MemoryError{
+		pgerr: pgerror.NewErrorf(
+			pgerror.CodeOutOfMemoryError,
+			"%s: memory budget exceeded: %d bytes requested, %d bytes in budget",
+			name,
+			requested,
+			budget,
+		),
+	}
 }
 
 // increaseBudget requests more memory from the pool.
