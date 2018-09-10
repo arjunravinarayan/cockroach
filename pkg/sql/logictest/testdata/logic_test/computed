@@ -748,3 +748,19 @@ CREATE TABLE x (
 
 query error value type decimal doesn't match type INT of column "a"
 INSERT INTO x VALUES(1.4)
+
+# Regression test for 25742
+statement ok
+CREATE TABLE a (aa DECIMAL PRIMARY KEY)
+
+statement ok
+CREATE TABLE b (aa INT PRIMARY KEY, bb INT AS (aa + 1) STORED)
+
+statement ok
+INSERT INTO a VALUES (1.1)
+
+statement error pq: could not parse "foo" as type decimal
+INSERT INTO a VALUES ('foo')
+
+statement error tbd
+INSERT INTO b SELECT aa FROM a
